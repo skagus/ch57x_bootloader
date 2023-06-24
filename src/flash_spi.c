@@ -64,24 +64,15 @@ inline uint8 _WaitBusy()
 	return nResp;
 }
 
-void DumpData(uint8* aData, uint32 nByte)
-{
-	for(uint32 nIdx = 0; nIdx < nByte; nIdx++)
-	{
-		if(0 == (nIdx % 32)) CLI_Printf("\r\n");
-		CLI_Printf("%02X ", aData[nIdx]);
-	}
-	CLI_Printf("\r\n");
-}
 
-void _ReadId()
+uint32 _ReadId()
 {
 	uint8 anCmd[4] = {CMD_READID,0,0,0};
 	GPIOA_ResetBits(MAT_CS);
 	SPI0_MasterTrans(anCmd, 1);
 	SPI0_MasterRecv(anCmd, 4);
 	GPIOA_SetBits(MAT_CS);
-	DumpData(anCmd, 4);
+	return *(uint32*)anCmd;
 }
 
 void _WriteStatus()
@@ -104,7 +95,7 @@ void _Protect(uint32 nAddr, bool bProtect)
 	_IssueCmd(anCmd, 4);
 }
 
-void _ReadProt(uint32 nAddr, bool bProtect)
+uint8 _ReadProt(uint32 nAddr, bool bProtect)
 {
 	uint8 nResp;
 	uint8 anCmd[4];
@@ -117,10 +108,9 @@ void _ReadProt(uint32 nAddr, bool bProtect)
 	SPI0_MasterTrans(anCmd, 4);
 	SPI0_MasterRecv(&nResp, 1);
 	GPIOA_SetBits(MAT_CS);
-	DumpData(&nResp, 1);
-//	CLI_Printf("Prot: %X, %X --> %d\r\n", nAddr, &nResp, bProtect);
 
 	_Protect(nAddr, (0 == bProtect) && (0xFF == nResp));
+	return nResp;
 }
 
 
@@ -129,6 +119,7 @@ uint8 _Erase(uint32 nSAddr)
 	uint32 nAddr = ALIGN_UP(nSAddr, SECT_SIZE);
 	uint8 anCmd[4] = {CMD_ERASE,};
 
+	_Protect(nAddr, false);
 	_WriteEnable();
 
 	anCmd[1] = (nAddr >> 16) & 0xFF;
@@ -224,25 +215,26 @@ uint8 FLASH_Erase(uint32 nSAddr, uint32 nLen)
 	return nRet;
 }
 
-static uint32 gnPgmAddr;
+typedef struct _YmInfo
+{
+	uint32 nAddr;
+} YmInfo;
 
-void _ProcWrite(uint8* pBuf, uint32* pnBytes, YmStep eStep)
+void _ProcWrite(uint8* pBuf, uint32* pnBytes, YmStep eStep, void* pParam)
 {
 	static uint32 nRest;
+	YmInfo* pInfo = (YmInfo*)pParam;
 	switch(eStep)
 	{
 		case YS_HEADER:
 		{
-			_DbgLog("H:%X, %X ", pBuf, *pnBytes);
-			// strcpy((uint8*)(gaName), pBuf);
 			nRest = *pnBytes;
 			break;
 		}
 		case YS_DATA:
 		{
-			// _DbgLog("D: %X, %X ", pBuf, *pnBytes);
-			FLASH_Write(pBuf, gnPgmAddr, *pnBytes);
-			gnPgmAddr += *pnBytes;
+			FLASH_Write(pBuf, pInfo->nAddr, *pnBytes);
+			pInfo->nAddr += *pnBytes;
 			nRest -= *pnBytes;
 			break;
 		}
@@ -250,7 +242,6 @@ void _ProcWrite(uint8* pBuf, uint32* pnBytes, YmStep eStep)
 		case YS_DONE:
 		default:
 		{
-			// _DbgLog("E: %d, %d, %d", eStep, gnFileLen, gnCurPtr);
 			break;
 		}
 	}
@@ -271,46 +262,48 @@ void flash_Cmd(uint8 argc, char* argv[])
 
 	if(argc >= 3)
 	{
-		nAddr = CLI_GetInt(argv[2]);
+		nAddr = UT_GetInt(argv[2]);
 	}
 	if(argc >= 4)
 	{
-		nByte = CLI_GetInt(argv[3]);
+		nByte = UT_GetInt(argv[3]);
 	}
 
 	if (nCmd == 'i')
 	{
-		_ReadId();
+		uint32 nId = _ReadId();
+		UT_Printf("FLASH ID: %X\n", nId);
 	}
 	else if (nCmd == 'p' && argc >= 3)
 	{
-		_ReadProt(nAddr, nByte);
+		uint8 nResp = _ReadProt(nAddr, nByte);
+		UT_Printf("Prot: %X, %X --> %d, \n", nAddr, nByte, nResp);
 	}
 	else if (nCmd == 'r' && argc >= 4) // r 8
 	{
 		nAddr = ALIGN_DN(nAddr, PAGE_SIZE);
-		CLI_Printf("SPI Read: %X, %d\r\n", nAddr, nByte);
+		UT_Printf("SPI Read: %X, %d\n", nAddr, nByte);
 		while(nByte > 0)
 		{
 			uint32 nThis = nByte > PAGE_SIZE ? PAGE_SIZE : nByte;
 			FLASH_Read(gaBuf, nAddr, nThis);
-			CLI_Printf("SPI Read: %X, %d\r\n", nAddr, nThis);
-			DumpData(gaBuf, nThis);
+			UT_Printf("SPI Read: %X, %d\n", nAddr, nThis);
+			UT_DumpData(gaBuf, nThis);
 			nAddr += nThis;
 			nByte -= nThis;
 		}
 	}
 	else if(nCmd == 'w' && argc >= 4) // cmd w addr byte
 	{
-		uint8 nVal = (argc < 5) ? 0xAA : CLI_GetInt(argv[4]);
+		uint8 nVal = (argc < 5) ? 0xAA : UT_GetInt(argv[4]);
 
 		memset(gaBuf, nVal, PAGE_SIZE);
-		CLI_Printf("SPI Write: %X, %d, %X\r\n", nAddr, nByte, nVal);
+		UT_Printf("SPI Write: %X, %d, %X\n", nAddr, nByte, nVal);
 		while(nByte > 0)
 		{
 			uint32 nThis = nByte > PAGE_SIZE ? PAGE_SIZE : nByte;
 			uint8 nRet = FLASH_Write(gaBuf, nAddr, nThis);
-			CLI_Printf("SPI Write: %X, %d --> %X\r\n", nAddr, nThis, nRet);
+			UT_Printf("SPI Write: %X, %d --> %X\n", nAddr, nThis, nRet);
 			nAddr += PAGE_SIZE;
 			nByte -= PAGE_SIZE;
 		}
@@ -318,16 +311,17 @@ void flash_Cmd(uint8 argc, char* argv[])
 	else if(nCmd == 'e' && argc >= 4) //
 	{
 		uint8 nRet = FLASH_Erase(nAddr, nByte);
-		CLI_Printf("SPI Erase: %X, %d --> %X\r\n", nAddr, nByte, nRet);
+		UT_Printf("SPI Erase: %X, %d --> %X\n", nAddr, nByte, nRet);
 	}
 	else if(nCmd == 'W' && argc >= 3) // Write with Y modem.
 	{
-		gnPgmAddr = nAddr;
-		YM_DoRx(_ProcWrite);
+		YmInfo stInfo;
+		stInfo.nAddr = nAddr;
+		YM_DoRx(_ProcWrite, (void*)&stInfo);
 	}
 	else
 	{
-		CLI_Printf("Wrong command\r\n");
+		UT_Printf("Wrong command\n");
 	}
 }
 
@@ -339,6 +333,5 @@ void FLASH_Init()
 	SPI0_CLKCfg(0xe8);
 
 	CLI_Register("flash", flash_Cmd);
-//	Sched_Register(TID_DOT, dot_Run);
 }
 

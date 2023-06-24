@@ -7,7 +7,7 @@
 /**
  * 모든 HW dependancy를 여기에 넣는다.
 */
-#define SIZE_BUF	(16)
+#define SIZE_BUF	(128)
 volatile char gaRcv[SIZE_BUF];
 volatile uint8 gnPush;
 volatile uint8 gnPop;
@@ -88,7 +88,7 @@ __attribute__((interrupt("machine")))
 __attribute__((section(".highcode")))
 void SW_Handler(void)
 {
-	UART_Puts("In SWH\r\n");
+	UART_Puts("In SWH\n");
 	Sched_TrigAsyncEvt(BIT(EVT_ECALL_DONE));
 }
 
@@ -181,7 +181,7 @@ void DEF_IRQHandler(void) // TMR0 ��ʱ�ж�
 	asm("csrr %0, mcause":"=r"(nSrc));
 	while(1)
 	{
-		HAL_DbgLog("DBG mcause:%X\r\n", nSrc);
+		HAL_DbgLog("DBG mcause:%X\n", nSrc);
 	}
 #if defined(WCH_INT)
 	asm("mret");
@@ -211,7 +211,7 @@ void EXC_IRQHandler(unsigned nParam0, unsigned nParam1, unsigned nParam2, unsign
 		case 7:		// Store/AMO access fault.
 		default:
 		{
-			CLI_Printf("Fault cause:%X\r\n", nSrc);
+			UT_Printf("Fault cause:%X\n", nSrc);
 			break;
 		}
 		case 8:		// ecall from U mode.
@@ -221,7 +221,7 @@ void EXC_IRQHandler(unsigned nParam0, unsigned nParam1, unsigned nParam2, unsign
 		{
 			unsigned nPC;
 			asm volatile("csrr %0, mepc":"=r"(nPC));
-			CLI_Printf("ECall :%X, P:%X, %X, %X, %X\r\n",
+			UT_Printf("ECall :%X, P:%X, %X, %X, %X\n",
 						nSrc, nParam0, nParam1, nParam2, nParam3);
 			UART_Puts(aOut);
 			nPC += 4;  // Inc PC because it is NOT fault.

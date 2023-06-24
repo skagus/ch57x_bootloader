@@ -1,7 +1,7 @@
 #include <string.h>
 #include "types.h"
 #include "macro.h"
-#include "crc16.h"
+#include "util.h"
 #include "cli.h"
 #include "ymodem.h"
 #include "hal.h"
@@ -42,7 +42,9 @@ typedef enum
 	YMODEM_PACKET_WAIT_CRCL,
 } PktState;
 
-
+/*
+[SOH::1] [SEQ:0x00:1] [nSEQ:0xFF:1] [filename:"foo.c":] [filesize:"1064":] [pad:00:118] [CRC::2]
+*/
 typedef struct
 {
 	PktState	ePktState;
@@ -70,11 +72,11 @@ typedef struct
 	uint8*	pRxData;
 
 	YPacket	stRxPkt;
-} ymodem_t;
+} YRcvCtx;
 
 bool ym_RcvPkt(YPacket *pstPkt, uint8_t nNewData);
 
-#define DBG_YM(...)			//	HAL_DbgLog(__VA_ARGS__)
+#define DBG_YM(...)				HAL_DbgLog(__VA_ARGS__)
 
 inline void TxResp(uint8 nCode)
 {
@@ -82,7 +84,7 @@ inline void TxResp(uint8 nCode)
 	DBG_YM(" RSP(%X) ", nCode);
 }
 
-void ym_Reset(ymodem_t *pstModem)
+void ym_Reset(YRcvCtx *pstModem)
 {
 	pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
 	pstModem->stRxPkt.ePktState = YMODEM_PACKET_WAIT_FIRST;
@@ -95,19 +97,12 @@ void ym_Reset(ymodem_t *pstModem)
 /*
 받은 packet에서 file정보 (file name, file size 를 뽑아온다.)
 */
-bool ym_GetFileInfo(ymodem_t *pstModem)
+bool ym_GetFileInfo(YRcvCtx *pstModem)
 {
 	bool bSucc = true;
 	bool bValid = false;
 	uint16_t nBufIdx;
-#if 0
-	DBG_YM("\r\n1st Pkt: ");
-	for(uint32 i = 0; i< 128; i++)
-	{
-		DBG_YM("%2X ", pstModem->pRxData[i]);
-	}
-	DBG_YM("\r\n");
-#endif	
+
 	for (int i = 0; i < MAX_FILE_NAME_LEN; i++)
 	{
 		pstModem->szFileName[i] = pstModem->pRxData[i];
@@ -138,7 +133,7 @@ bool ym_GetFileInfo(ymodem_t *pstModem)
 	return bSucc;
 }
 
-bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
+bool ym_Rx(YRcvCtx *pstModem, YmHandle pfRxHandle, void* pParam)
 {
 	bool bRet = false;
 	uint32_t nThisLen;
@@ -154,6 +149,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 				pstModem->eYmState = YMODEM_STATE_WAIT_CANCEL;
 			}
 		}
+		pstModem->nPrvTick = Sched_GetTick();
 
 		DBG_YM("State: %d ", pstModem->eYmState);
 
@@ -170,7 +166,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 				{
 					ym_GetFileInfo(pstModem);
 					nThisLen = pstModem->nFileLen;
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_HEADER);
+					pfRxHandle(pstModem->pRxData, &nThisLen, YS_HEADER, pParam);
 					TxResp(YMODEM_ACK);
 					TxResp(YMODEM_C);
 
@@ -198,7 +194,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 					{
 						nThisLen = pstModem->stRxPkt.nSizePayload;
 					}
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA);
+					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA, pParam);
 
 					pstModem->nReceived += nThisLen;
 
@@ -224,7 +220,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 					{
 						nThisLen = pstModem->stRxPkt.nSizePayload;
 					}
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA);
+					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA, pParam);
 					pstModem->nReceived += nThisLen;
 
 					TxResp(YMODEM_ACK);
@@ -243,7 +239,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 			}
 			case YMODEM_STATE_WAIT_END:
 			{
-				pfRxHandle(NULL, NULL, YS_DONE);
+				pfRxHandle(NULL, NULL, YS_DONE, pParam);
 				TxResp(YMODEM_ACK);
 				pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
 				pstModem->eType = YMODEM_TYPE_END;
@@ -252,7 +248,7 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 			}
 			case YMODEM_STATE_WAIT_CANCEL:
 			{
-				pfRxHandle(NULL, NULL, YS_FAIL);
+				pfRxHandle(NULL, NULL, YS_FAIL, pParam);
 				TxResp(YMODEM_ACK);
 				pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
 				pstModem->eType = YMODEM_TYPE_CANCEL;
@@ -263,14 +259,11 @@ bool ym_Rx(ymodem_t *pstModem, YmHandle pfRxHandle)
 	}
 	else
 	{
-//		if (pstModem->stRxPkt.ePktState == YMODEM_PACKET_WAIT_FIRST)
+		if (Sched_GetTick() - pstModem->nPrvTick >= pstModem->nTimeOut)
 		{
-			if (Sched_GetTick() - pstModem->nPrvTick >= pstModem->nTimeOut)
-			{
-				pstModem->nPrvTick = Sched_GetTick();
-				DBG_YM("Timeout\n");
-				TxResp(YMODEM_C);
-			}
+			pstModem->nPrvTick = Sched_GetTick();
+			DBG_YM("Timeout\n");
+			TxResp(YMODEM_C);
 		}
 	}
 	return bRet;
@@ -332,7 +325,6 @@ bool ym_RcvPkt(YPacket *pstPkt, uint8 nNewData)
 			{
 				pstPkt->ePktState = YMODEM_PACKET_WAIT_FIRST;
 			}
-
 			break;
 
 		case YMODEM_PACKET_WAIT_DATA:
@@ -354,7 +346,7 @@ bool ym_RcvPkt(YPacket *pstPkt, uint8 nNewData)
 		case YMODEM_PACKET_WAIT_CRCL:
 			pstPkt->nRxCrc |= (nNewData << 0);
 			pstPkt->ePktState = YMODEM_PACKET_WAIT_FIRST;
-			uint16 nCRC = crc16(pstPkt->pPayload, pstPkt->nSizePayload);
+			uint16 nCRC = UT_Crc16(pstPkt->pPayload, pstPkt->nSizePayload);
 
 			if (nCRC == pstPkt->nRxCrc)
 			{
@@ -367,31 +359,7 @@ bool ym_RcvPkt(YPacket *pstPkt, uint8 nNewData)
 	return bRet;
 }
 
-
-void dumpData(uint8* aBuff, uint32 nLength)
-{
-	for(uint32 i=0; i< nLength; i++)
-	{
-		if(0 == (i % 32))
-		{
-			CLI_Printf("\r\n");
-		}
-		CLI_Printf(" %2X", aBuff[i]);
-	}
-}
-
-uint8 gaDbgLog[1024];
-uint32 gnDbgPtr = 0;
-void _DbgLog(char* szFmt, ...)
-{
-	char aBuf[128];
-	va_list arg_ptr;
-	va_start(arg_ptr, szFmt);
-	vsprintf(aBuf, szFmt, arg_ptr);
-	va_end(arg_ptr);
-	memcpy(gaDbgLog + gnDbgPtr, aBuf, strlen(aBuf));
-	gnDbgPtr += strlen(aBuf);
-}
+#if 0
 uint8 gaBuff[2048];
 uint8 gaName[128];
 uint32 gnCurPtr;
@@ -432,68 +400,18 @@ bool _Handle(uint8* pBuf, uint32* pnBytes, YmStep eStep)
 	}
 	return true;
 }
+#endif
 
-static ymodem_t gstYM;
+static YRcvCtx gstYM;
 
-void ym_Cmd(uint8 argc, char* argv[])
+YmodemType YM_DoRx(YmHandle pfRxHandle, void* pParam)
 {
-	if (argc < 2)
-	{
-		CLI_Printf("%s r <Addr>\r\n", argv[0]);
-		CLI_Printf("%s t <Addr> <Size>\r\n", argv[0]);
-	}
-	else
-	{
-		uint32 nAddr = CLI_GetInt(argv[1]);
-		if ('r' == argv[1][0])
-		{
-			CLI_Printf("TX in PC\r\n");
-			ym_Reset(&gstYM);
-
-			while(1)
-			{
-				if(ym_Rx(&gstYM, _Handle))
-				{
-					YmodemType eYT = gstYM.eType;
-					if ((YMODEM_TYPE_END == eYT)
-						|| (YMODEM_TYPE_CANCEL == eYT)
-						|| (YMODEM_TYPE_ERROR == eYT))
-					{
-						DBG_YM("End: %X\n", eYT);
-						break;
-					}
-				}
-			}
-		}
-		else if ('t' == argv[1][0])
-		{
-			CLI_Printf("Start receive in PC\r\n");
-			ym_Reset(&gstYM);
-		}
-		else if ('i' == argv[1][0])
-		{
-			CLI_Printf("Result: %d\n", gstYM.eType);
-			// if(YMODEM_TYPE_END == gstYM.eType)
-			{
-				dumpData(gaBuff, gstYM.nFileLen);
-			}
-			UART0_SendString(gaDbgLog, strlen(gaDbgLog));
-		}
-		else
-		{
-			CLI_Printf("Wrong command or parameter\r\n");
-		}
-	}
-}
-
-YmodemType YM_DoRx(YmHandle pfRxHandle)
-{
-	CLI_Printf("Send File to Device\r\n");
+	UT_Printf("Send File to Device\n");
 	ym_Reset(&gstYM);
 	YmodemType eYT = YMODEM_TYPE_END;
 	while(1)
 	{
-		if(ym_Rx(&gstYM, pfRxHandle))
+		if(ym_Rx(&gstYM, pfRxHandle, pParam))
 		{
 			eYT = gstYM.eType;
 			if ((YMODEM_TYPE_END == eYT)
@@ -505,6 +423,28 @@ YmodemType YM_DoRx(YmHandle pfRxHandle)
 		}
 	}
 	return eYT;
+}
+
+void ym_Cmd(uint8 argc, char* argv[])
+{
+	if (argc < 2)
+	{
+		UT_Printf("%s r <Addr>\n", argv[0]);
+		UT_Printf("%s t <Addr> <Size>\n", argv[0]);
+	}
+	else
+	{
+		uint32 nAddr = UT_GetInt(argv[1]);
+		if ('t' == argv[1][0])
+		{
+			UT_Printf("Start receive in PC\n");
+			ym_Reset(&gstYM);
+		}
+		else 
+		{
+			UT_Printf("Wrong command or parameter\n");
+		}
+	}
 }
 
 void YM_Init(void)

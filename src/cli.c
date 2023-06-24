@@ -35,16 +35,16 @@ void cli_CmdHelp(uint8 argc, char* argv[])
 {
 	if(argc > 1)
 	{
-		uint32 nNum = CLI_GetInt(argv[1]);
-		CLI_Printf("help with %08lx\r\n", nNum);
+		uint32 nNum = UT_GetInt(argv[1]);
+		UT_Printf("help with %08lx\n", nNum);
 		char* aCh = (char*)&nNum;
-		CLI_Printf("help with %02X %02X %02X %02X\r\n", aCh[0], aCh[1], aCh[2], aCh[3]);
+		UT_Printf("help with %02X %02X %02X %02X\n", aCh[0], aCh[1], aCh[2], aCh[3]);
 	}
 	else
 	{
 		for(uint8 nIdx = 0; nIdx < gnCmds; nIdx++)
 		{
-			CLI_Printf("%d: %s\r\n", nIdx, gaCmds[nIdx].szCmd);
+			UT_Printf("%d: %s\n", nIdx, gaCmds[nIdx].szCmd);
 		}
 	}
 }
@@ -59,7 +59,7 @@ void cli_CmdHistory(uint8 argc, char* argv[])
 {
 	if(argc > 1) // Run the indexed command.
 	{
-		uint8 nSlot = CLI_GetInt(argv[1]);
+		uint8 nSlot = UT_GetInt(argv[1]);
 		if(nSlot < COUNT_LINE_BUF)
 		{
 			if(strlen(gaHistBuf[nSlot]) > 0)
@@ -76,7 +76,7 @@ void cli_CmdHistory(uint8 argc, char* argv[])
 			nIdx = (nIdx + 1) % COUNT_LINE_BUF;
 			if(strlen(gaHistBuf[nIdx]) > 0)
 			{
-				CLI_Printf("%2d> %s\r\n", nIdx, gaHistBuf[nIdx]);
+				UT_Printf("%2d> %s\n", nIdx, gaHistBuf[nIdx]);
 			}
 
 		} while(nIdx != gnPrvHist);
@@ -105,7 +105,7 @@ uint8 lb_GetNextEntry(bool bInc, char* szCmdLine)
 	int nGab = (true == bInc) ? 1 : -1;
 	do
 	{
-		gnHistRef = (gnHistRef + COUNT_LINE_BUF + nGab) % COUNT_LINE_BUF;        
+		gnHistRef = (gnHistRef + COUNT_LINE_BUF + nGab) % COUNT_LINE_BUF;
 		if(strlen(gaHistBuf[gnHistRef]) > 0)
 		{
 			strcpy(szCmdLine, gaHistBuf[gnHistRef]);
@@ -159,7 +159,7 @@ void cli_RunCmd(char* szCmdLine)
 
 	if(false == bExecute)
 	{
-		CLI_Printf("Unknown command: %s\r\n", szCmdLine);
+		UT_Printf("Unknown command: %s\n", szCmdLine);
 	}
 	UART_SetCbf(cbf_RxUart, NULL);
 }
@@ -185,12 +185,12 @@ void cli_Run(Evts bmEvt)
 			if(nLen > 0)
 			{
 				aLine[nLen] = 0;
-				UART_Puts("\r\n");
+				UART_Puts("\n");
 				lb_NewEntry(aLine);
 				cli_RunCmd(aLine);
 				nLen = 0;
 			}
-			UART_Puts("\r\n$> ");
+			UART_Puts("\n$> ");
 		}
 		else if(0x7F == nCh) // backspace.
 		{
@@ -223,7 +223,7 @@ void cli_Run(Evts bmEvt)
 		}
 		else
 		{
-			CLI_Printf("~ %X\r\n", nCh);
+			UT_Printf("~ %X\n", nCh);
 		}
 	}
 
@@ -231,36 +231,6 @@ void cli_Run(Evts bmEvt)
 }
 
 /////////////////////
-void CLI_Printf(char* szFmt, ...)
-{
-	char aBuf[64];
-	va_list arg_ptr;
-	va_start(arg_ptr, szFmt);
-	vsprintf(aBuf, szFmt, arg_ptr);
-	va_end(arg_ptr);
-	UART_Puts(aBuf);
-}
-
-uint32 CLI_GetInt(char* szStr)
-{
-	uint32 nNum;
-	char* pEnd;
-	uint8 nLen = strlen(szStr);
-	if((szStr[0] == '0') && ((szStr[1] == 'b') || (szStr[1] == 'B'))) // Binary.
-	{
-		nNum = strtoul(szStr + 2, &pEnd, 2);
-	}
-	else
-	{
-		nNum = (uint32)strtoul(szStr, &pEnd, 0);
-	}
-
-	if((pEnd - szStr) != nLen)
-	{
-		nNum = NOT_NUMBER;
-	}
-	return nNum;
-}
 
 void CLI_Register(char* szCmd, CmdHandler *pHandle)
 {

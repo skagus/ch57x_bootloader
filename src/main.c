@@ -30,8 +30,8 @@ int main()
 	FLASH_Init();
 	YM_Init();
 
-	CLI_Printf(gpVersion);
-	HAL_DbgLog("Hello\r\n");
+	UT_Printf(gpVersion);
+	HAL_DbgLog("Hello\n");
 
 	while(1)
 	{

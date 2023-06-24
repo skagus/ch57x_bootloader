@@ -19,6 +19,14 @@ typedef enum
 	YMODEM_TYPE_ERROR,
 } YmodemType;
 
+typedef enum
+{
+	YT_IDLE,
+	YT_TRANS,
+	YT_END,
+	YT_CANCEL,
+	YT_ERROR,
+} YtState;
 
 /**
 YModem에 뭔가를 요청할 때에는 Handler를 넘겨줘야 한다. 
@@ -35,7 +43,7 @@ TX일때 handler는
  * 
 */
 
-typedef bool (*YmHandle)(uint8* pBuf, uint32* pnBytes, YmStep eStep);
-YmodemType YM_DoRx(YmHandle pfRxHandle);
-bool YM_DoTx(YmHandle pfTxHandle);
+typedef bool (*YmHandle)(uint8* pBuf, uint32* pnBytes, YmStep eStep, void* pParam);
+YmodemType YM_DoRx(YmHandle pfRxHandle, void* pParam);
+bool YM_DoTx(YmHandle pfTxHandle, void* pParam);
 void YM_Init(void);
