@@ -1,7 +1,7 @@
 #pragma once
 
-#include <stdint.h>
+#include "types.h"
 
-uint16_t crc16(const uint8_t* aBuf, int nLen);
+uint16 crc16(const uint8* aBuf, int nLen);
 
 

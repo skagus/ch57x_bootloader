@@ -43,13 +43,14 @@ void UART_TxD(char nCh)
 
 void HAL_DbgLog(char* szFmt, ...)
 {
-	char aBuf[64];
+	char aBuf[128];
 	va_list arg_ptr;
 	va_start(arg_ptr, szFmt);
 	vsprintf(aBuf, szFmt, arg_ptr);
 	va_end(arg_ptr);
 
 	UART1_SendString(aBuf, strlen(aBuf));
+//	while(R8_UART1_TFC != 0);
 }
 
 void HAL_DbgInit()
@@ -58,6 +59,7 @@ void HAL_DbgInit()
 //	GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);      // RXD
 	GPIOA_ModeCfg(GPIO_Pin_9, GPIO_ModeOut_PP_5mA); // TXD
 	UART1_DefInit();
+	R8_UART1_THR = UART_FIFO_SIZE;
 }
 
 void UART_Init(uint32 nBPS)
@@ -177,8 +179,10 @@ void DEF_IRQHandler(void) // TMR0 ��ʱ�ж�
 {
 	unsigned nSrc;
 	asm("csrr %0, mcause":"=r"(nSrc));
-	CLI_Printf("DBG mcause:%X\r\n", nSrc);
-	while(1);
+	while(1)
+	{
+		HAL_DbgLog("DBG mcause:%X\r\n", nSrc);
+	}
 #if defined(WCH_INT)
 	asm("mret");
 #endif

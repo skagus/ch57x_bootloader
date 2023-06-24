@@ -25,3 +25,5 @@
 #define ALIGN_DN(nNum, nAlign)		(((nNum) / (nAlign)) * (nAlign))
 #define ALIGN_UP(nNum, nAlign)		((((nNum) + (nAlign) - 1) / (nAlign)) * (nAlign))
 
+#define MAX(a, b) 					((a) > (b) ? (a) : (b))
+#define MIN(a, b) 					((a) < (b) ? (a) : (b))
