@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include "macro.h"
 #include "sched.h"
+#include "util.h"
 #include "cli.h"
 #include "hal.h"
 //////////////////////////////////
@@ -52,6 +53,8 @@ void cli_CmdHelp(uint8 argc, char* argv[])
 
 void cli_TrigEcall(uint8 argc, char* argv[])
 {
+	UNUSED(argc);
+	UNUSED(argv);
 	RV_ecall(0,0,0,0);
 }
 
@@ -85,6 +88,8 @@ void cli_CmdHistory(uint8 argc, char* argv[])
 
 void cbf_RxUart(uint8 tag, uint8 result)
 {
+	UNUSED(tag);
+	UNUSED(result);
 	Sched_TrigAsyncEvt(BIT(EVT_UART));
 }
 
@@ -168,6 +173,7 @@ uint32 gnPrvECall;
 
 void cli_Run(Evts bmEvt)
 {
+	UNUSED(bmEvt);
 	static uint8 nLen = 0;
 	static char aLine[LEN_LINE];
 	char nCh;
@@ -202,11 +208,11 @@ void cli_Run(Evts bmEvt)
 		}
 		else if(0x1B == nCh) // Escape sequence.
 		{
-			uint8 nCh2, nCh3;
-			while(0 == UART_RxD((char*)&nCh2));
+			char nCh2, nCh3;
+			while(0 == UART_RxD(&nCh2));
 			if(0x5B == nCh2) // direction.
 			{
-				while(0 == UART_RxD((char*)&nCh3));
+				while(0 == UART_RxD(&nCh3));
 				if(0x41 == nCh3) // up.
 				{
 					nLen = lb_GetNextEntry(false, aLine);
@@ -240,7 +246,7 @@ void CLI_Register(char* szCmd, CmdHandler *pHandle)
 }
 
 ///////////////////////
-void CLI_Init()
+void CLI_Init(void)
 {
 	UART_Init(UART_BPS);
 	UART_SetCbf(cbf_RxUart, NULL);

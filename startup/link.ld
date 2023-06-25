@@ -20,12 +20,13 @@ SECTIONS
 		_einit = .;
 	} >FLASH AT>FLASH
 
+/*
 	OVERLAY : NOCROSSREFS
 	{
 		.ovly0 {*(.ovl0)}
 		.ovly1 {*(.ovl1)}
 	} > OVL AT>FLASH
-
+*/
 
 /*	.vector :
 	{
@@ -143,9 +144,11 @@ SECTIONS
 	{
 		. = ALIGN(4); 
 		PROVIDE(_data_vma = .);
+/*
 		__ovly_table = .; 
 		LONG(ABSOLUTE(ADDR(.ovly0))); LONG(LOADADDR(.ovly0)); LONG(SIZEOF(.ovly0));
 		LONG(ABSOLUTE(ADDR(.ovly1))); LONG(LOADADDR(.ovly1)); LONG(SIZEOF(.ovly1));
+*/
 		*(.gnu.linkonce.r.*)
 		*(.data .data.*)
 		*(.gnu.linkonce.d.*)

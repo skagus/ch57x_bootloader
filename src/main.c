@@ -13,11 +13,13 @@
 #include "CH57x_common.h"
 #include "version.h"
 #include "sched.h"
+#include "hal.h"
+#include "util.h"
 #include "cli.h"
 #include "flash_spi.h"
 #include "ymodem.h"
 
-int main()
+int main(void)
 {
 	SetSysClock(CLK_SOURCE_PLL_60MHz);
 //	DelayMs(1000); // Wait 1 sec.

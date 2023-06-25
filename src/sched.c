@@ -23,6 +23,7 @@ volatile uint16 gnAsyncTick;	// TickISR���� ++
 
 void sched_TickISR(uint8 tag, uint8 result)
 {
+	UNUSED(tag);UNUSED(result);
 	gnAsyncTick ++;
 //	gnCurTick ++;
 

@@ -1,12 +1,16 @@
 
+#include <string.h> // memset.
 #include "CH573SFR.h"
 #include "core_riscv.h"
 #include "CH57x_gpio.h"
 #include "CH57x_spi.h"
 #include "macro.h"
 #include "sched.h"
+#include "util.h"
 #include "cli.h"
+#include "hal.h"
 #include "ymodem.h"
+#include "flash_spi.h"
 
 #define MAT_CS				(GPIO_Pin_5)
 #define MAT_CLK				(GPIO_Pin_13)
@@ -31,7 +35,7 @@
 /**
  * For SPI DMA, data should be in SRAM..??
 */
-uint8 gaBuf[PAGE_SIZE];
+#define DBG(...)			HAL_DbgLog(__VA_ARGS__)
 
 inline void _IssueCmd(uint8* aCmds, uint8 nLen)
 {
@@ -40,13 +44,13 @@ inline void _IssueCmd(uint8* aCmds, uint8 nLen)
 	GPIOA_SetBits(MAT_CS);
 }
 
-inline void _WriteEnable()
+inline void _WriteEnable(void)
 {
 	uint8 nCmd = CMD_WREN;
 	_IssueCmd(&nCmd, 1);
 }
 
-inline uint8 _WaitBusy()
+inline uint8 _WaitBusy(void)
 {
 	uint8 nCmd = CMD_READRDSR;
 	uint8 nResp = 0;
@@ -65,7 +69,7 @@ inline uint8 _WaitBusy()
 }
 
 
-uint32 _ReadId()
+uint32 _ReadId(void)
 {
 	uint8 anCmd[4] = {CMD_READID,0,0,0};
 	GPIOA_ResetBits(MAT_CS);
@@ -75,7 +79,7 @@ uint32 _ReadId()
 	return *(uint32*)anCmd;
 }
 
-void _WriteStatus()
+void _WriteStatus(void)
 {
 	uint8 anCmd[2];
 	anCmd[0] = CMD_READWRSR;
@@ -83,7 +87,7 @@ void _WriteStatus()
 	_IssueCmd(anCmd, 2);
 }
 
-void _Protect(uint32 nAddr, bool bProtect)
+void _UnProtect(uint32 nAddr)
 {
 	uint8 anCmd[4];
 	anCmd[0] = CMD_UNPROTECT;
@@ -91,11 +95,21 @@ void _Protect(uint32 nAddr, bool bProtect)
 	anCmd[2] = (nAddr >> 8) & 0xFF;
 	anCmd[3] = nAddr & 0xFF;
 	_WriteEnable();
-	anCmd[0] = bProtect ? CMD_PROTECT : CMD_UNPROTECT;
 	_IssueCmd(anCmd, 4);
 }
 
-uint8 _ReadProt(uint32 nAddr, bool bProtect)
+void _Protect(uint32 nAddr)
+{
+	uint8 anCmd[4];
+	anCmd[0] = CMD_PROTECT;
+	anCmd[1] = (nAddr >> 16) & 0xFF;
+	anCmd[2] = (nAddr >> 8) & 0xFF;
+	anCmd[3] = nAddr & 0xFF;
+	_WriteEnable();
+	_IssueCmd(anCmd, 4);
+}
+
+uint8 _ReadProt(uint32 nAddr)
 {
 	uint8 nResp;
 	uint8 anCmd[4];
@@ -109,32 +123,32 @@ uint8 _ReadProt(uint32 nAddr, bool bProtect)
 	SPI0_MasterRecv(&nResp, 1);
 	GPIOA_SetBits(MAT_CS);
 
-	_Protect(nAddr, (0 == bProtect) && (0xFF == nResp));
 	return nResp;
 }
 
 
 uint8 _Erase(uint32 nSAddr)
 {
+	DBG("E:%X ", nSAddr);
+
 	uint32 nAddr = ALIGN_UP(nSAddr, SECT_SIZE);
 	uint8 anCmd[4] = {CMD_ERASE,};
-
-	_Protect(nAddr, false);
-	_WriteEnable();
-
 	anCmd[1] = (nAddr >> 16) & 0xFF;
 	anCmd[2] = (nAddr >> 8) & 0xFF;
 	anCmd[3] = nAddr & 0xFF;
 
+	_UnProtect(nAddr);
+	_WriteEnable();
 	_IssueCmd(anCmd, 4);
-	return _WaitBusy();
+	uint8 nRet = _WaitBusy();
+	DBG("->%X\n", nRet);
+	return nRet;
 }
 
 
 uint8 _Write(uint8* pBuf, uint32 nAddr, uint32 nByte)
 {
-	_Protect(nAddr, false);
-	_WriteEnable();
+	DBG("W:%X,%d ", nAddr,nByte);
 
 	uint8 anCmd[4];
 	anCmd[0] = CMD_PGM;
@@ -142,16 +156,22 @@ uint8 _Write(uint8* pBuf, uint32 nAddr, uint32 nByte)
 	anCmd[2] = (nAddr >> 8) & 0xFF;
 	anCmd[3] = nAddr & 0xFF;
 
+	_UnProtect(nAddr);
+	_WriteEnable();
 	GPIOA_ResetBits(MAT_CS);
 	SPI0_MasterTrans(anCmd, 4);
 	SPI0_MasterTrans(pBuf, nByte);
 	GPIOA_SetBits(MAT_CS);
 
-	return _WaitBusy();
+	uint8 nRet = _WaitBusy();
+	DBG("->%X\n", nRet);
+	return nRet;
 }
 
 void _Read(uint8* pBuf, uint32 nAddr, uint32 nByte)
 {
+	DBG("R:%X,%d\n", nAddr,nByte);
+
 	uint8 anCmd[4];
 	anCmd[0] = CMD_READ;
 	anCmd[1] = (nAddr >> 16) & 0xFF;
@@ -180,6 +200,7 @@ void FLASH_Read(uint8* pBuf, uint32 nSAddr, uint32 nInLen)
 	}
 }
 
+#include "CH57x_common.h"
 uint8 FLASH_Write(uint8* pBuf, uint32 nSAddr, uint32 nInLen)
 {
 	uint8 nRet = 0xFF;
@@ -193,6 +214,7 @@ uint8 FLASH_Write(uint8* pBuf, uint32 nSAddr, uint32 nInLen)
 		{
 			nRet = _Erase(nAddr);
 		}
+		mDelaymS(100);
 		nRet = _Write(pBuf, nAddr, nLen);
 		pBuf += nLen;
 		nAddr += nLen;
@@ -220,9 +242,10 @@ typedef struct _YmInfo
 	uint32 nAddr;
 } YmInfo;
 
-void _ProcWrite(uint8* pBuf, uint32* pnBytes, YmStep eStep, void* pParam)
+bool _ProcWrite(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 {
 	static uint32 nRest;
+	bool bRet = true;
 	YmInfo* pInfo = (YmInfo*)pParam;
 	switch(eStep)
 	{
@@ -238,14 +261,12 @@ void _ProcWrite(uint8* pBuf, uint32* pnBytes, YmStep eStep, void* pParam)
 			nRest -= *pnBytes;
 			break;
 		}
-		case YS_FAIL:
-		case YS_DONE:
 		default:
 		{
 			break;
 		}
 	}
-
+	return bRet;
 }
 
 void flash_Cmd(uint8 argc, char* argv[])
@@ -254,6 +275,8 @@ void flash_Cmd(uint8 argc, char* argv[])
 	{
 		return;
 	}
+	
+	uint8 aBuf[PAGE_SIZE];
 
 	// flash <cmd> <addr> <size> <opt>
 	char nCmd = argv[1][0];
@@ -276,19 +299,23 @@ void flash_Cmd(uint8 argc, char* argv[])
 	}
 	else if (nCmd == 'p' && argc >= 3)
 	{
-		uint8 nResp = _ReadProt(nAddr, nByte);
-		UT_Printf("Prot: %X, %X --> %d, \n", nAddr, nByte, nResp);
+		uint8 nResp = _ReadProt(nAddr);
+		UT_Printf("Prot: %X, %X\n", nAddr, nResp);
+		if(nByte != 0)
+		{
+			_Protect(nAddr);
+		}
 	}
 	else if (nCmd == 'r' && argc >= 4) // r 8
 	{
 		nAddr = ALIGN_DN(nAddr, PAGE_SIZE);
-		UT_Printf("SPI Read: %X, %d\n", nAddr, nByte);
+		UT_Printf("Flash Read: %X, %d\n", nAddr, nByte);
 		while(nByte > 0)
 		{
 			uint32 nThis = nByte > PAGE_SIZE ? PAGE_SIZE : nByte;
-			FLASH_Read(gaBuf, nAddr, nThis);
-			UT_Printf("SPI Read: %X, %d\n", nAddr, nThis);
-			UT_DumpData(gaBuf, nThis);
+			FLASH_Read(aBuf, nAddr, nThis);
+			UT_Printf("Read: %X, %d\n", nAddr, nThis);
+			UT_DumpData(aBuf, nThis);
 			nAddr += nThis;
 			nByte -= nThis;
 		}
@@ -297,13 +324,13 @@ void flash_Cmd(uint8 argc, char* argv[])
 	{
 		uint8 nVal = (argc < 5) ? 0xAA : UT_GetInt(argv[4]);
 
-		memset(gaBuf, nVal, PAGE_SIZE);
-		UT_Printf("SPI Write: %X, %d, %X\n", nAddr, nByte, nVal);
+		memset(aBuf, nVal, PAGE_SIZE);
+		UT_Printf("FLASH Write: %X, %d, %X\n", nAddr, nByte, nVal);
 		while(nByte > 0)
 		{
 			uint32 nThis = nByte > PAGE_SIZE ? PAGE_SIZE : nByte;
-			uint8 nRet = FLASH_Write(gaBuf, nAddr, nThis);
-			UT_Printf("SPI Write: %X, %d --> %X\n", nAddr, nThis, nRet);
+			uint8 nRet = FLASH_Write(aBuf, nAddr, nThis);
+			UT_Printf("Page Write: %X, %d --> %X\n", nAddr, nThis, nRet);
 			nAddr += PAGE_SIZE;
 			nByte -= PAGE_SIZE;
 		}
@@ -311,7 +338,7 @@ void flash_Cmd(uint8 argc, char* argv[])
 	else if(nCmd == 'e' && argc >= 4) //
 	{
 		uint8 nRet = FLASH_Erase(nAddr, nByte);
-		UT_Printf("SPI Erase: %X, %d --> %X\n", nAddr, nByte, nRet);
+		UT_Printf("FLASH Erase: %X, %d --> %X\n", nAddr, nByte, nRet);
 	}
 	else if(nCmd == 'W' && argc >= 3) // Write with Y modem.
 	{
@@ -325,7 +352,7 @@ void flash_Cmd(uint8 argc, char* argv[])
 	}
 }
 
-void FLASH_Init()
+void FLASH_Init(void)
 {
 	GPIOA_SetBits(MAT_CS);
 	GPIOA_ModeCfg(MAT_CS | MAT_CLK | MAT_DOUT, GPIO_ModeOut_PP_5mA);

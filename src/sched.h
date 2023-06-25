@@ -25,13 +25,13 @@ typedef uint32 Evts;
 
 typedef void(*Entry)(Evts nEvt);
 
-Cbf Sched_Init();
+Cbf Sched_Init(void);
 void Sched_Register(TaskId nTaskID, Entry pfTask); ///< Register tasks.
 
-void Sched_Run();
+void Sched_Run(void);
 
 void Sched_Wakeup(uint8 nTaskID);	///< �˰� �ִ� task�� wakeup.
 void Sched_Wait(Evts bmEvt, uint16 nTick);
 void Sched_TrigSyncEvt(Evts bmEvt);
 void Sched_TrigAsyncEvt(Evts bmEvt);
-uint16 Sched_GetTick();
+uint16 Sched_GetTick(void);

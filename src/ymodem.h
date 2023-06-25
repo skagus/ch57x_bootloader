@@ -1,33 +1,24 @@
 #pragma once
 #include "types.h"
 
-typedef enum _YmStep
-{
-	YS_HEADER,	// File 이름과 size를 넘겨준다.
-	YS_DATA,	// Data를 넘겨준다.
-	YS_DONE,	// 완료됨.
-	YS_FAIL,	// Error 발생함.
-	NUM_YS,
-} YmStep;
 
 typedef enum
 {
-	YMODEM_TYPE_START,
-	YMODEM_TYPE_DATA,
-	YMODEM_TYPE_END,
-	YMODEM_TYPE_CANCEL,
-	YMODEM_TYPE_ERROR,
-} YmodemType;
+	YS_HEADER,
+	YS_DATA,	///< Some data received.
+	YS_ERROR,		///< Some error occured.
+	YS_CANCEL,		///< Canceled by Host.
+	YS_END,
+} YMState;
 
-typedef enum
+typedef enum _YRet
 {
-	YT_IDLE,
-	YT_TRANS,
-	YT_END,
-	YT_CANCEL,
-	YT_ERROR,
-} YtState;
+	YR_DONE,
+	YR_CANCEL,
+	YR_ERROR,
+} YRet;
 
+#define YM_TIMEOUT			(300) // 3sec.
 /**
 YModem에 뭔가를 요청할 때에는 Handler를 넘겨줘야 한다. 
 Handler는 Tx와 Rx일때 조금 다르게 동작한다. 
@@ -43,7 +34,7 @@ TX일때 handler는
  * 
 */
 
-typedef bool (*YmHandle)(uint8* pBuf, uint32* pnBytes, YmStep eStep, void* pParam);
-YmodemType YM_DoRx(YmHandle pfRxHandle, void* pParam);
+typedef bool (*YmHandle)(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam);
+YRet YM_DoRx(YmHandle pfRxHandle, void* pParam);
 bool YM_DoTx(YmHandle pfTxHandle, void* pParam);
 void YM_Init(void);

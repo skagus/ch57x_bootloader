@@ -1,16 +1,18 @@
 #include <stdarg.h>
+#include <stdio.h>
 #include "types.h"
 #include "macro.h"
+#include "util.h"
 #include "CH57x_common.h"
 #include "sched.h"
-
+#include "hal.h"
 /**
  * 모든 HW dependancy를 여기에 넣는다.
 */
 #define SIZE_BUF	(128)
 volatile char gaRcv[SIZE_BUF];
-volatile uint8 gnPush;
-volatile uint8 gnPop;
+volatile uint16 gnPush;
+volatile uint16 gnPop;
 Cbf gRxCbf;
 Cbf gTxCbf;
 
@@ -33,7 +35,7 @@ void UART_SetCbf(Cbf cbRx, Cbf cbTx)
 
 void UART_Puts(char* szLine)
 {
-	UART0_SendString(szLine, strlen(szLine));
+	UART0_SendString((uint8*)szLine, strlen(szLine));
 }
 
 void UART_TxD(char nCh)
@@ -49,11 +51,11 @@ void HAL_DbgLog(char* szFmt, ...)
 	vsprintf(aBuf, szFmt, arg_ptr);
 	va_end(arg_ptr);
 
-	UART1_SendString(aBuf, strlen(aBuf));
+	UART1_SendString((uint8*)aBuf, strlen(aBuf));
 //	while(R8_UART1_TFC != 0);
 }
 
-void HAL_DbgInit()
+void HAL_DbgInit(void)
 {
 	GPIOA_SetBits(GPIO_Pin_9); // for uart signal level.
 //	GPIOA_ModeCfg(GPIO_Pin_8, GPIO_ModeIN_PU);      // RXD
@@ -64,6 +66,7 @@ void HAL_DbgInit()
 
 void UART_Init(uint32 nBPS)
 {
+	UNUSED(nBPS);
 	GPIOB_SetBits(GPIO_Pin_7); // for uart signal level.
 	GPIOB_ModeCfg(GPIO_Pin_4, GPIO_ModeIN_PU);      // RXD
 	GPIOB_ModeCfg(GPIO_Pin_7, GPIO_ModeOut_PP_5mA); // TXD
@@ -76,6 +79,7 @@ void UART_Init(uint32 nBPS)
 __attribute__((naked))
 uint32 RV_ecall(uint32 nP0, uint32 nP1, uint32 nP2, uint32 nP3)
 {
+	UNUSED(nP0);UNUSED(nP1);UNUSED(nP2);UNUSED(nP3);
 	asm volatile("ecall");
 	asm volatile("ret");
 }
@@ -91,8 +95,6 @@ void SW_Handler(void)
 	UART_Puts("In SWH\n");
 	Sched_TrigAsyncEvt(BIT(EVT_ECALL_DONE));
 }
-
-char aOut[30];
 
 #if defined(WCH_INT)
 __attribute__((naked))
@@ -113,10 +115,17 @@ void UART0_IRQHandler(void)
 		case UART_II_RECV_RDY: // UART interrupt by receiver data available
 		case UART_II_RECV_TOUT: // UART interrupt by receiver fifo timeout
 		{
-			while((R8_UART0_RFC) && (gnPop != ((gnPush + 1) % SIZE_BUF)))
+			while(R8_UART0_RFC)
 			{
-				gaRcv[gnPush] = UART0_RecvByte();
-				gnPush = (gnPush + 1) % SIZE_BUF;
+				if(gnPop != ((gnPush + 1) % SIZE_BUF))
+				{
+					gaRcv[gnPush] = UART0_RecvByte();
+					gnPush = (gnPush + 1) % SIZE_BUF;
+				}
+				else
+				{	// Hang in ISR without pop.
+					UART0_RecvByte(); // Trash.
+				}
 			}
 			if(NULL != gRxCbf)
 			{
@@ -223,7 +232,6 @@ void EXC_IRQHandler(unsigned nParam0, unsigned nParam1, unsigned nParam2, unsign
 			asm volatile("csrr %0, mepc":"=r"(nPC));
 			UT_Printf("ECall :%X, P:%X, %X, %X, %X\n",
 						nSrc, nParam0, nParam1, nParam2, nParam3);
-			UART_Puts(aOut);
 			nPC += 4;  // Inc PC because it is NOT fault.
 			asm volatile("csrw mepc, %0"::"r"(nPC));
 			// WCH Fast interrupt때문에 parameter return은 안됨. 

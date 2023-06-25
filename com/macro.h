@@ -4,6 +4,7 @@
 	#undef FALSE
 	#undef TRUE
 #endif
+#define UNUSED(x)					(void)(x)
 
 #define NOT(x)						(!(x))
 #define BRK_IF(cond)				do{ if (cond) while(1); }while(0)

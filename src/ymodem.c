@@ -1,11 +1,12 @@
 #include <string.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include "types.h"
 #include "macro.h"
 #include "util.h"
 #include "cli.h"
 #include "ymodem.h"
 #include "hal.h"
-#include <stdarg.h>
 
 #define YMODEM_SOH 0x01
 #define YMODEM_STX 0x02
@@ -19,410 +20,349 @@
 #define MAX_FILE_NAME_LEN	(128)
 #define DATA_BYTE_SMALL		(128)
 #define DATA_BYTE_BIG		(1024)
+#define EXTRA_SIZE			(5)
+#define YMODEM_BUF_LENGTH	(DATA_BYTE_BIG + EXTRA_SIZE)
 
-#define YMODEM_BUF_LENGTH	(DATA_BYTE_BIG + 5)
-
-typedef enum
-{
-	YMODEM_STATE_WAIT_HEAD,
-	YMODEM_STATE_WAIT_FIRST,
-	YMODEM_STATE_WAIT_DATA,
-	YMODEM_STATE_WAIT_LAST,
-	YMODEM_STATE_WAIT_END,
-	YMODEM_STATE_WAIT_CANCEL,
-} YMState;
+#define DBG_YM(...)			HAL_DbgLog(__VA_ARGS__)
 
 typedef enum
 {
-	YMODEM_PACKET_WAIT_FIRST,
-	YMODEM_PACKET_WAIT_SEQ1,
-	YMODEM_PACKET_WAIT_SEQ2,
-	YMODEM_PACKET_WAIT_DATA,
-	YMODEM_PACKET_WAIT_CRCH,
-	YMODEM_PACKET_WAIT_CRCL,
+	PKT_WAIT_1ST,	// SOH or SOX.
+	PKT_WAIT_REST,	// from Seq ~ CRC.
+	PKT_DONE,
 } PktState;
+
+typedef enum
+{
+	PR_NONE,
+	PR_SUCC,	///< Good data.
+	PR_EOT,		///< Single byte: EOT received.
+	PR_CANCEL,	///< 
+	PR_CRC_ERR,	///< CRC Error. or en expected.
+	PR_ERROR,
+} PktRet;
 
 /*
 [SOH::1] [SEQ:0x00:1] [nSEQ:0xFF:1] [filename:"foo.c":] [filesize:"1064":] [pad:00:118] [CRC::2]
 */
-typedef struct
+typedef struct _Pkt
 {
-	PktState	ePktState;
-	uint16		nDataIdx;
-
-	uint8		eResp;		// Protocol Response.
-	uint8		nSeq;		// Seq Number.
-	uint8*		pPayload;
-	uint16		nSizePayload;	///< Payload size (128 | 1024)
-	uint16		nRxCrc;
-	uint8		aRxBuf[YMODEM_BUF_LENGTH];
-} YPacket;
+	uint8 nCode;
+	uint8 nSeq;
+	uint8 nInvSeq;
+	uint8 nData;
+} Pkt;
 
 typedef struct
 {
-	YmodemType eType;
-	YMState	eYmState;
-	uint32	nPrvTick;
-	uint32	nTimeOut;	// response timeout.
+	PktState	ePktState;	// Current packet state.
+	PktRet		eRet;		// Packet RX return.
+	uint16		nSize;		///< total RX size.
+	uint16		nCntRx;		///< Received data count.(include head)
+	uint8*		pBuf;
+} PktCtx;
 
-	uint8	szFileName[MAX_FILE_NAME_LEN];
-	uint32	nFileLen;	// 전송될 파일 크기.
-	uint32	nReceived;	// 현재까지 받은 데이터 양.
+typedef struct
+{
+	YMState		eState;
+	uint32		nPrvTick;	///< To Check timeout.
+	uint32		nCntTO;		///< Timeout counter.
 
-	uint8*	pRxData;
+	uint32		nFileLen;
+	uint32		nFileOff;	///< File의 용량중, 현재 packet의 base.
+	char		szFileName[MAX_FILE_NAME_LEN];
+	uint8		aBuf[YMODEM_BUF_LENGTH + 10];
+	PktCtx		stPktCtx;
+} YmCtx;
 
-	YPacket	stRxPkt;
-} YRcvCtx;
-
-bool ym_RcvPkt(YPacket *pstPkt, uint8_t nNewData);
-
-#define DBG_YM(...)				HAL_DbgLog(__VA_ARGS__)
 
 inline void TxResp(uint8 nCode)
 {
 	UART_TxD(nCode);
-	DBG_YM(" RSP(%X) ", nCode);
+	DBG_YM("->(%X)\n", nCode);
 }
 
-void ym_Reset(YRcvCtx *pstModem)
+void _PktReset(PktCtx* pCtx, uint8* pBuf)
 {
-	pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
-	pstModem->stRxPkt.ePktState = YMODEM_PACKET_WAIT_FIRST;
-	pstModem->stRxPkt.pPayload = &pstModem->stRxPkt.aRxBuf[3];
-	pstModem->pRxData = &pstModem->stRxPkt.aRxBuf[3];
+	pCtx->ePktState = PKT_WAIT_1ST;
+	pCtx->eRet = PR_NONE;
+	pCtx->pBuf = pBuf;
+	pCtx->nCntRx = 0;
+}
+
+void _Reset(YmCtx* pstModem)
+{
+	pstModem->eState = YS_HEADER;
 	pstModem->nPrvTick = Sched_GetTick();
-	pstModem->nTimeOut = 300;	// 10ms tick --> 3 secs.
+	_PktReset(&(pstModem->stPktCtx), pstModem->aBuf);
 }
 
 /*
 받은 packet에서 file정보 (file name, file size 를 뽑아온다.)
 */
-bool ym_GetFileInfo(YRcvCtx *pstModem)
+bool ym_GetFileInfo(YmCtx* pYmCtx, Pkt* pPkt)
 {
 	bool bSucc = true;
-	bool bValid = false;
-	uint16_t nBufIdx;
+	uint32 nLen = strlen((char*)&pPkt->nData) + 1; // including \0
+	strncpy(pYmCtx->szFileName, (char*)&pPkt->nData, nLen);
+	DBG_YM("F:%s(%d),", pYmCtx->szFileName, nLen);
 
-	for (int i = 0; i < MAX_FILE_NAME_LEN; i++)
-	{
-		pstModem->szFileName[i] = pstModem->pRxData[i];
-		if (pstModem->szFileName[i] == 0x0)
-		{
-			nBufIdx = i + 1;
-			bValid = true;
-			break;
-		}
-	}
-//	DBG_YM("F:%s ", pstModem->szFileName);
-
-	if (bValid && (nBufIdx < MAX_FILE_NAME_LEN))
-	{
-		for (int i = nBufIdx; i < MAX_FILE_NAME_LEN; i++)
-		{
-			if (pstModem->pRxData[i] == 0x20)
-			{
-				pstModem->pRxData[i] = 0x00;
-				break;
-			}
-		}
-
-		pstModem->nFileLen = (uint32_t)strtoul((const char *)&pstModem->pRxData[nBufIdx], (char **)NULL, (int)0);
-	}
-//	DBG_YM("S:%d ", pstModem->nFileLen);
+	pYmCtx->nFileLen = (uint32)strtoul((char*)(&pPkt->nData + nLen), (char **)NULL, (int)0);
+	pYmCtx->nFileOff = 0;
+	DBG_YM("L:%d\n", pYmCtx->nFileLen);
 
 	return bSucc;
 }
 
-bool ym_Rx(YRcvCtx *pstModem, YmHandle pfRxHandle, void* pParam)
+
+bool ym_RcvPkt(PktCtx *pPktCtx, uint8 nNewData)
 {
-	bool bRet = false;
-	uint32_t nThisLen;
-	uint8 nRcvData;
-	uint8 bUpdated = UART_RxD(&nRcvData);
-
-	if (bUpdated && (true == ym_RcvPkt(&pstModem->stRxPkt, nRcvData)))
+	bool bDone = false;
+	Pkt* pPkt = (Pkt*)pPktCtx->pBuf;
+	// CRC calculation in 128 or 1024 bytes.
+	switch (pPktCtx->ePktState)
 	{
-		if (pstModem->eYmState != YMODEM_STATE_WAIT_HEAD)
+		case PKT_WAIT_1ST:
 		{
-			if (pstModem->stRxPkt.eResp == YMODEM_CAN)
-			{
-				pstModem->eYmState = YMODEM_STATE_WAIT_CANCEL;
-			}
-		}
-		pstModem->nPrvTick = Sched_GetTick();
-
-		DBG_YM("State: %d ", pstModem->eYmState);
-
-		switch (pstModem->eYmState)
-		{
-			case YMODEM_STATE_WAIT_HEAD:
-			{
-				if (pstModem->stRxPkt.eResp == YMODEM_EOT)
-				{
-					TxResp(YMODEM_NACK);
-					pstModem->eYmState = YMODEM_STATE_WAIT_LAST;
-				}
-				else if (pstModem->stRxPkt.nSeq == 0x00)
-				{
-					ym_GetFileInfo(pstModem);
-					nThisLen = pstModem->nFileLen;
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_HEADER, pParam);
-					TxResp(YMODEM_ACK);
-					TxResp(YMODEM_C);
-
-					pstModem->nReceived = 0;
-					pstModem->eYmState = YMODEM_STATE_WAIT_FIRST;
-					pstModem->eType = YMODEM_TYPE_START;
-					bRet = true;
-				}
-				break;
-			}
-
-			case YMODEM_STATE_WAIT_FIRST:
-			{
-				if (pstModem->stRxPkt.eResp == YMODEM_EOT)
-				{
-					TxResp(YMODEM_NACK);
-					pstModem->eYmState = YMODEM_STATE_WAIT_LAST;
-				}
-				else if (pstModem->stRxPkt.nSeq == 0x01)
-				{
-					pstModem->nReceived = 0;
-
-					nThisLen = (pstModem->nFileLen - pstModem->nReceived);
-					if (nThisLen > pstModem->stRxPkt.nSizePayload)
-					{
-						nThisLen = pstModem->stRxPkt.nSizePayload;
-					}
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA, pParam);
-
-					pstModem->nReceived += nThisLen;
-
-					TxResp(YMODEM_ACK);
-
-					pstModem->eYmState = YMODEM_STATE_WAIT_DATA;
-					pstModem->eType = YMODEM_TYPE_DATA;
-					bRet = true;
-				}
-				break;
-			}
-			case YMODEM_STATE_WAIT_DATA:
-			{
-				if (pstModem->stRxPkt.eResp == YMODEM_EOT)
-				{
-					TxResp(YMODEM_NACK);
-					pstModem->eYmState = YMODEM_STATE_WAIT_LAST;
-				}
-				else
-				{
-					nThisLen = (pstModem->nFileLen - pstModem->nReceived);
-					if (nThisLen > pstModem->stRxPkt.nSizePayload)
-					{
-						nThisLen = pstModem->stRxPkt.nSizePayload;
-					}
-					pfRxHandle(pstModem->pRxData, &nThisLen, YS_DATA, pParam);
-					pstModem->nReceived += nThisLen;
-
-					TxResp(YMODEM_ACK);
-					pstModem->eType = YMODEM_TYPE_DATA;
-					bRet = true;
-				}
-				break;
-			}
-
-			case YMODEM_STATE_WAIT_LAST:
-			{
-				TxResp(YMODEM_ACK);
-				TxResp(YMODEM_C);
-				pstModem->eYmState = YMODEM_STATE_WAIT_END;
-				break;
-			}
-			case YMODEM_STATE_WAIT_END:
-			{
-				pfRxHandle(NULL, NULL, YS_DONE, pParam);
-				TxResp(YMODEM_ACK);
-				pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
-				pstModem->eType = YMODEM_TYPE_END;
-				bRet = true;
-				break;
-			}
-			case YMODEM_STATE_WAIT_CANCEL:
-			{
-				pfRxHandle(NULL, NULL, YS_FAIL, pParam);
-				TxResp(YMODEM_ACK);
-				pstModem->eYmState = YMODEM_STATE_WAIT_HEAD;
-				pstModem->eType = YMODEM_TYPE_CANCEL;
-				bRet = true;
-				break;
-			}
-		}
-	}
-	else
-	{
-		if (Sched_GetTick() - pstModem->nPrvTick >= pstModem->nTimeOut)
-		{
-			pstModem->nPrvTick = Sched_GetTick();
-			DBG_YM("Timeout\n");
-			TxResp(YMODEM_C);
-		}
-	}
-	return bRet;
-}
-
-bool ym_RcvPkt(YPacket *pstPkt, uint8 nNewData)
-{
-	bool bRet = false;
-
-	switch (pstPkt->ePktState)
-	{
-		case YMODEM_PACKET_WAIT_FIRST:
+			pPktCtx->nCntRx = 0;
+			pPktCtx->pBuf[pPktCtx->nCntRx] = nNewData;
+			pPktCtx->nCntRx++;
 			if (nNewData == YMODEM_SOH)
 			{
-				pstPkt->nSizePayload = DATA_BYTE_SMALL;
-				pstPkt->eResp = nNewData;
-				pstPkt->ePktState = YMODEM_PACKET_WAIT_SEQ1;
-				DBG_YM("SOH ");
+				pPktCtx->nSize = DATA_BYTE_SMALL + EXTRA_SIZE;
+				pPktCtx->ePktState = PKT_WAIT_REST;
+				DBG_YM("SO:");
 			}
 			else if (nNewData == YMODEM_STX)
 			{
-				pstPkt->nSizePayload = DATA_BYTE_BIG;
-				pstPkt->eResp = nNewData;
-				pstPkt->ePktState = YMODEM_PACKET_WAIT_SEQ1;
-				DBG_YM("STX ");
+				pPktCtx->nSize = DATA_BYTE_BIG + EXTRA_SIZE;
+				pPktCtx->ePktState = PKT_WAIT_REST;
+				DBG_YM("ST:");
 			}
 			else if (nNewData == YMODEM_EOT)
 			{
-				pstPkt->eResp = nNewData;
-				bRet = true;
-				DBG_YM("EOT ");
+				pPktCtx->eRet = PR_EOT;
+				DBG_YM("EO:");
+				bDone = true;
 			}
 			else if (nNewData == YMODEM_CAN)
 			{
-				pstPkt->eResp = nNewData;
-				DBG_YM("CAN ");
-				bRet = true;
+				pPktCtx->eRet = PR_CANCEL;
+				DBG_YM("CA:");
+				bDone = true;
 			}
 			else
 			{
-				// ??
+				pPktCtx->eRet = PR_ERROR;
+				DBG_YM("UN:%X ", nNewData);
+				// Nothing to do.
 			}
 			break;
-
-		case YMODEM_PACKET_WAIT_SEQ1:
-			pstPkt->nSeq = nNewData;
-			pstPkt->ePktState = YMODEM_PACKET_WAIT_SEQ2;
-			DBG_YM("SEQ2 ");
-			break;
-
-		case YMODEM_PACKET_WAIT_SEQ2:
-			if (pstPkt->nSeq == (uint8)(~nNewData))
+		}
+		case PKT_WAIT_REST:
+		{
+			pPktCtx->pBuf[pPktCtx->nCntRx] = nNewData;
+			pPktCtx->nCntRx++;
+			if(pPktCtx->nCntRx >= pPktCtx->nSize)
 			{
-				pstPkt->nDataIdx = 0;
-				pstPkt->ePktState = YMODEM_PACKET_WAIT_DATA;
-				DBG_YM("SEQ:%d ", pstPkt->nSeq);
-			}
-			else
-			{
-				pstPkt->ePktState = YMODEM_PACKET_WAIT_FIRST;
-			}
-			break;
-
-		case YMODEM_PACKET_WAIT_DATA:
-			pstPkt->pPayload[pstPkt->nDataIdx] = nNewData;
-			pstPkt->nDataIdx++;
-			if (pstPkt->nDataIdx >= pstPkt->nSizePayload)
-			{
-				pstPkt->ePktState = YMODEM_PACKET_WAIT_CRCH;
-				DBG_YM("CRCH ");
+				bDone = true;
+				uint32 nDataLen = pPktCtx->nSize - EXTRA_SIZE;
+				uint16 nCalcCRC = UT_Crc16(&pPkt->nData, nDataLen);
+				uint16 nReadCRC = (uint16)((&pPkt->nData)[nDataLen]) << 8;
+				nReadCRC |= (uint16)nNewData;
+				pPktCtx->eRet = (nReadCRC == nCalcCRC) ? PR_SUCC : PR_CRC_ERR;
 			}
 			break;
-
-		case YMODEM_PACKET_WAIT_CRCH:
-			pstPkt->nRxCrc = (nNewData << 8);
-			pstPkt->ePktState = YMODEM_PACKET_WAIT_CRCL;
-			DBG_YM("CRCL ");
+		}
+		default: // PKT_DONE
+		{
+			// Nothing to do..
 			break;
-
-		case YMODEM_PACKET_WAIT_CRCL:
-			pstPkt->nRxCrc |= (nNewData << 0);
-			pstPkt->ePktState = YMODEM_PACKET_WAIT_FIRST;
-			uint16 nCRC = UT_Crc16(pstPkt->pPayload, pstPkt->nSizePayload);
-
-			if (nCRC == pstPkt->nRxCrc)
-			{
-				bRet = true;
-			}
-			DBG_YM("CRC Done %X %X %X\n", pstPkt->eResp, nCRC, pstPkt->nRxCrc);
-			break;
+		}
 	}
 
-	return bRet;
+	return bDone;
 }
 
-#if 0
-uint8 gaBuff[2048];
-uint8 gaName[128];
-uint32 gnCurPtr;
-uint32 gnFileLen;
 
-bool _Handle(uint8* pBuf, uint32* pnBytes, YmStep eStep)
+bool ym_Rx(YmCtx *pstModem, YmHandle pfRxHandle, void* pParam)
 {
-	DBG_YM("Hdl: %d, %X, %X ", eStep, pBuf, *pnBytes);
-//	return true;
+	bool bDone = false;
+	uint8 nRcvData;
+	uint8 bUpdated = UART_RxD((char*)&nRcvData);
+	PktCtx* pPktCtx = &(pstModem->stPktCtx);
+	Pkt* pPkt = (Pkt*)pstModem->aBuf;
+
+	if (bUpdated)
+	{
+		pstModem->nPrvTick = Sched_GetTick();
+		pstModem->nCntTO = 0;
+		if (ym_RcvPkt(pPktCtx, nRcvData))
+		{
+			YMState ePrv = pstModem->eState;
+
+			switch (pstModem->eState)
+			{
+				case YS_HEADER:
+				{
+					if (PR_SUCC == pPktCtx->eRet)
+					{
+						DBG_YM("HR:%d\n", pPkt->nSeq);
+						if(0 == pPkt->nData) // No rest file.
+						{
+							TxResp(YMODEM_ACK);
+							bDone = true;
+							pstModem->eState = YS_END;
+						}
+						else
+						{
+							TxResp(YMODEM_ACK);	// ACK for packet.(start for New file.)
+							ym_GetFileInfo(pstModem, pPkt);
+							if(NULL != pfRxHandle)
+							{
+								uint32 nLen = pstModem->nFileLen;
+								pfRxHandle((uint8*)pstModem->szFileName, &nLen, YS_HEADER, pParam);
+							}
+							TxResp(YMODEM_C);	// Go continue.
+							pstModem->eState = YS_DATA;
+						}
+					}
+					else if(PR_EOT == pPktCtx->eRet)
+					{
+						TxResp(YMODEM_ACK); // Rcv EOT (No new file!!)
+						TxResp(YMODEM_C); // Give me END packet.
+//						pstModem->eState = YS_HEADER;
+					}
+					else if(PR_CANCEL == pPktCtx->eRet)
+					{
+						TxResp(YMODEM_NACK);
+						pstModem->eState = YS_CANCEL;
+					}
+					else if(PR_CRC_ERR == pPktCtx->eRet)
+					{
+						TxResp(YMODEM_NACK);
+//						pstModem->eState = YS_HEADER;
+					}
+					else
+					{
+						bDone = true;
+					}
+					break;
+				}
+
+				case YS_DATA: // maybe data...
+				{
+					if (PR_SUCC == pPktCtx->eRet)
+					{
+						DBG_YM("DR:%d\n", pPkt->nSeq);
+						if((0 != pPkt->nSeq) && (NULL != pfRxHandle))
+						{
+							uint32 nLen = MIN((uint32)(pPktCtx->nCntRx - EXTRA_SIZE),
+											(pstModem->nFileLen - pstModem->nFileOff));
+							pfRxHandle(&(pPkt->nData), &nLen, YS_DATA, pParam);
+							pstModem->nFileOff += nLen;
+						}						
+						TxResp(YMODEM_ACK);
+					}
+					else if(PR_EOT == pPktCtx->eRet) // Next file.
+					{
+						TxResp(YMODEM_NACK);
+						pstModem->eState = YS_HEADER;
+					}
+					else if(PR_CANCEL == pPktCtx->eRet)
+					{
+						TxResp(YMODEM_ACK);
+						pstModem->eState = YS_CANCEL;
+					}
+					else if(PR_CRC_ERR == pPktCtx->eRet)
+					{
+						TxResp(YMODEM_NACK);
+					}
+					else
+					{
+						bDone = true;
+					}
+					break;
+				}
+
+				case YS_CANCEL:
+				case YS_ERROR:
+				case YS_END:
+				{
+					bDone = true;
+					break;
+				}
+			}
+			
+			DBG_YM("State:%d -> %X (%d)\n", ePrv, pstModem->eState, pPktCtx->eRet);
+			_PktReset(pPktCtx, pstModem->aBuf);
+		}
+	}
+	else if ((Sched_GetTick() - pstModem->nPrvTick) >= YM_TIMEOUT)
+	{
+		if((pstModem->eState <= YS_DATA) && (pstModem->nCntTO < 5))
+		{
+			pstModem->nPrvTick = Sched_GetTick();
+			pstModem->nCntTO ++;
+			DBG_YM("TO");
+			TxResp(YMODEM_C);
+		}
+		else
+		{
+			bDone = true;
+		}
+	}
+
+	return bDone;
+}
+
+bool _Handle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
+{
+	UNUSED(pParam);
 
 	switch(eStep)
 	{
 		case YS_HEADER:
 		{
-			_DbgLog("H:%X, %X ", pBuf, *pnBytes);
-			strcpy((uint8*)(gaName), pBuf);
-			gnFileLen = *pnBytes;
-			gnCurPtr = 0;
+			DBG_YM("H:%s, %d\n", pBuf, *pnBytes); // File name and File Length.
 			break;
 		}
 		case YS_DATA:
 		{
-			_DbgLog("D: %X, %X ", pBuf, *pnBytes);
-			if( gnCurPtr + *pnBytes)
-			{
-				memcpy((uint8*)(gaBuff + gnCurPtr), pBuf, (uint32)(*pnBytes));
-				gnCurPtr += *pnBytes;
-			}
+			DBG_YM("D:%X, %d\n", pBuf, *pnBytes);
 			break;
 		}
-		case YS_FAIL:
-		case YS_DONE:
 		default:
 		{
-			_DbgLog("E: %d, %d, %d", eStep, gnFileLen, gnCurPtr);
+			DBG_YM("?:%X, %X\n", pBuf, pnBytes);
 			break;
 		}
 	}
 	return true;
 }
-#endif
 
-static YRcvCtx gstYM;
+static YmCtx gstYM;
 
-YmodemType YM_DoRx(YmHandle pfRxHandle, void* pParam)
+YRet YM_DoRx(YmHandle pfRxHandle, void* pParam)
 {
 	UT_Printf("Send File to Device\n");
-	ym_Reset(&gstYM);
-	YmodemType eYT = YMODEM_TYPE_END;
+	_Reset(&gstYM);
+	YRet eYRet = YR_DONE;
+	char nRxData;
+	while(UART_RxD(&nRxData));
+
 	while(1)
 	{
 		if(ym_Rx(&gstYM, pfRxHandle, pParam))
 		{
-			eYT = gstYM.eType;
-			if ((YMODEM_TYPE_END == eYT)
-				|| (YMODEM_TYPE_CANCEL == eYT)
-				|| (YMODEM_TYPE_ERROR == eYT))
-			{
-				break;
-			}
+			YMState eState = gstYM.eState;
+			if(eState == YS_CANCEL) eYRet = YR_CANCEL;
+			else if(eState == YS_ERROR) eYRet = YR_ERROR;
+
+			break;
 		}
 	}
-	return eYT;
+	return eYRet;
 }
 
 void ym_Cmd(uint8 argc, char* argv[])
@@ -435,10 +375,13 @@ void ym_Cmd(uint8 argc, char* argv[])
 	else
 	{
 		uint32 nAddr = UT_GetInt(argv[1]);
-		if ('t' == argv[1][0])
+		if ('r' == argv[1][0])
+		{
+			YM_DoRx(_Handle, &nAddr);
+		}
+		else if ('t' == argv[1][0])
 		{
 			UT_Printf("Start receive in PC\n");
-			ym_Reset(&gstYM);
 		}
 		else 
 		{

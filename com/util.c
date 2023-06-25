@@ -1,4 +1,7 @@
 #include <stdarg.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include "hal.h"
 #include "types.h"
 #include "util.h"
@@ -10,7 +13,7 @@ uint32 UT_GetInt(char* szStr)
 	uint8 nLen = strlen(szStr);
 	if((szStr[0] == '0') && ((szStr[1] == 'b') || (szStr[1] == 'B'))) // Binary.
 	{
-		nNum = strtoul(szStr + 2, &pEnd, 2);
+		nNum = strtoul((szStr + 2), &pEnd, 2);
 	}
 	else
 	{
@@ -81,10 +84,10 @@ static const uint16 anCrc16Tbl[256]= {
 	0x6e17,0x7e36,0x4e55,0x5e74,0x2e93,0x3eb2,0x0ed1,0x1ef0
 };
   
-uint16 UT_Crc16(const uint8* aBuf, int nLen)
+uint16 UT_Crc16(const uint8* aBuf, uint32 nLen)
 {
 	uint16 nCrc = 0;
-	for(int nCnt = 0; nCnt < nLen; nCnt++)
+	for(uint32 nCnt = 0; nCnt < nLen; nCnt++)
 	{
 		nCrc = (nCrc<<8) ^ anCrc16Tbl[ ((nCrc>>8) ^ aBuf[nCnt]) & 0x00FF];
 	}
