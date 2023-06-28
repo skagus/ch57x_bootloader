@@ -348,7 +348,7 @@ bool ym_Rx(YmCtx *pstModem, YmHandle pfRxHandle, void* pParam)
 	return bDone;
 }
 
-bool _Handle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
+bool _RxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 {
 	UNUSED(pParam);
 
@@ -397,40 +397,129 @@ YRet YM_DoRx(YmHandle pfRxHandle, void* pParam)
 	return eYRet;
 }
 
-#if 0
+bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
+{
+	UNUSED(pParam);
+
+	switch(eStep)
+	{
+		case YS_HEADER:
+		{
+			sprintf(pBuf, "%s", "test.log");
+			*pnBytes = 1024 * 16 + 128;
+			break;
+		}
+		case YS_DATA:
+		{
+			uint32 nOff = *pnBytes;
+			memset(pBuf, '0' + (nOff / 1024), 1024);
+			break;
+		}
+		default:
+		{
+			DBG_YM("?:%X, %X\n", pBuf, pnBytes);
+			break;
+		}
+	}
+	return true;
+}
+
+void _SendFirst(uint8* pData)
+{
+	UART_TxD(YMODEM_SOH);
+	UART_TxD(0);
+	UART_TxD(0xFF);
+	UART0_SendString(pData, DATA_BYTE_SMALL);
+	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_SMALL);
+	UART_TxD(nCRC >> 8);
+	UART_TxD(nCRC & 0xFF);
+}
+
+void _SendData(uint8 nSeqNo, uint8* pData)
+{
+	UART_TxD(YMODEM_STX);
+	UART_TxD(nSeqNo);
+	UART_TxD(~nSeqNo);
+	UART0_SendString(pData, DATA_BYTE_BIG);
+	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_BIG);
+	UART_TxD(nCRC >> 8);
+	UART_TxD(nCRC & 0xFF);
+}
+
+void _SendNull(uint8* pData)
+{
+	UART_TxD(YMODEM_SOH);
+	UART_TxD(0);
+	UART_TxD(0xFF);
+	memset(pData, 0x0, DATA_BYTE_SMALL);
+	UART0_SendString(pData, DATA_BYTE_SMALL);
+	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_SMALL);
+	UART_TxD(nCRC >> 8);
+	UART_TxD(nCRC & 0xFF);
+}
+
+uint8 _WaitResp(void)
+{
+	uint8 nRxData;
+	while(0 == UART_RxD(&nRxData));
+	return nRxData;
+}
+
 YRet YM_DoTx(YmHandle pfTxHandle, void* pParam)
 {
 	UT_Printf("Data to Device to Host\n");
 	char nRxData;
-	while(UART_RxD(&nRxData));
 	_Reset(&gstYM);
-	YRet eYRet = YR_DONE;
-	Pkt* pPkt = (Pkt*)gstYM.aBuf;
 
-//////////// Prepare 1st Packet ///////////////
-	uint32 nLen = 1030;
-//	pfTxHandle(pPkt->SMALL.aData, &nLen, YS_HEADER, pParam);
-	sprintf((char*)(pPkt->SMALL.aData), "%s", "test.log");
+	PktCtx stPkt;
+	stPkt.pDataBuf = gstYM.aBuf;
 
+	while(UART_RxD(&nRxData)); // RCV buffer비우기.
+	DBG_YM("Empty Rcv\n");
+	while(YMODEM_C != _WaitResp());
+	DBG_YM("Start\n");
+	char* pPayload = (char*)stPkt.pDataBuf; 
+
+	int32 nLen;
+	pfTxHandle(pPayload, &nLen, YS_HEADER, pParam);	// Get header.
+	uint32 nSizeOff = strlen(pPayload) + 1;
+	sprintf(pPayload + nSizeOff, "%d", nLen);
 	gstYM.nFileLen = nLen;
-	while(UART_RxD(&nRxData));
-	if(YMODEM_C != nRxData) goto END;
-	
-	nLen = strlen((char*)pPkt->SMALL.aData) + 1;
-	sprintf((char*)(pPkt->SMALL.aData + nLen), "%d", (int)gstYM.nFileLen);
-	pPkt->nCode = YMODEM_SOH;
-	pPkt->nSeq = 0;
-	pPkt->nInvSeq = 0xFF;
-	uint16 nCRC = UT_Crc16(pPkt->SMALL.aData, DATA_BYTE_SMALL);
-	pPkt->SMALL.nCrcL = (nCRC & 0xFF);
-	pPkt->SMALL.nCrcH = (nCRC >> 8);
-	UART0_SendString(pPkt, DATA_BYTE_SMALL + EXTRA_SIZE);
+	_SendFirst(stPkt.pDataBuf);
 
-	return eYRet;
-END:
-	return YR_ERROR;
+	DBG_YM("1st\n");
+	while(YMODEM_ACK != _WaitResp());	// ACK.
+	DBG_YM("1st Ack\n");
+	while(YMODEM_C != _WaitResp());	// C
+	DBG_YM("1st C\n");
+
+	uint8 nSeq = 1;
+	uint32 nThisLen = 1024;
+	while(nLen > 0)
+	{
+		nThisLen = (nSeq - 1) * 1024;
+		pfTxHandle(pPayload, &nThisLen, YS_DATA, pParam); // Get data.
+		_SendData(nSeq, stPkt.pDataBuf);
+		while(YMODEM_ACK != _WaitResp());
+		DBG_YM("Data Ack %d\n", nSeq);
+		nLen -= DATA_BYTE_BIG;
+		nSeq++;
+	}
+
+	UART_TxD(YMODEM_EOT);
+	while(YMODEM_NACK != _WaitResp());	// NAK.
+	DBG_YM("EOT NACK\n");
+
+	UART_TxD(YMODEM_EOT);
+	while(YMODEM_ACK != _WaitResp());	// ACK.
+	DBG_YM("EOT ACK\n");
+	while(YMODEM_C != _WaitResp());	// C
+	DBG_YM("EOT C\n");
+
+	_SendNull(stPkt.pDataBuf);
+	while(YMODEM_ACK !=_WaitResp());
+	DBG_YM("END ACK\n");
 }
-#endif
 
 void ym_Cmd(uint8 argc, char* argv[])
 {
@@ -444,11 +533,12 @@ void ym_Cmd(uint8 argc, char* argv[])
 		uint32 nAddr = UT_GetInt(argv[1]);
 		if ('r' == argv[1][0])
 		{
-			YM_DoRx(_Handle, &nAddr);
+			YM_DoRx(_RxHandle, &nAddr);
 		}
 		else if ('t' == argv[1][0])
 		{
 			UT_Printf("Start receive in PC\n");
+			YM_DoTx(_TxHandle, NULL);
 		}
 		else 
 		{
