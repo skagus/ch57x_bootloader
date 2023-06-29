@@ -212,24 +212,17 @@ bool ym_RcvPkt(PktCtx *pPktCtx, uint8 nNewData)
 	return bDone;
 }
 
-bool ym_Rx(YmCtx *pstModem, YmHandle pfRxHandle, void* pParam)
+bool ym_Rx(YmCtx *pstModem, YmHandle pfRxHandle, void* pParam, uint8 nRcvData)
 {
 	bool bDone = false;
-	uint8 nRcvData;
-	uint8 bUpdated = UART_RxD((char*)&nRcvData);
+//	uint8 nRcvData;
+//	uint8 bUpdated = UART_RxD((char*)&nRcvData);
 	PktCtx* pPktCtx = &(pstModem->stPktCtx);
-	pPktCtx->pDataBuf = pstModem->aBuf;
+//	pPktCtx->pDataBuf = pstModem->aBuf;
 
-	if(YS_INIT == pstModem->eState)
-	{
-		_PktReset(pPktCtx, pstModem->aBuf);
-		pstModem->eState = YS_HEADER;
-	}
 
-	if (bUpdated)
+	if (1) // bUpdated)
 	{
-		pstModem->nPrvTick = Sched_GetTick();
-		pstModem->nCntTO = 0;
 		if (ym_RcvPkt(pPktCtx, nRcvData))
 		{
 			YMState ePrv = pstModem->eState;
@@ -375,26 +368,41 @@ bool _RxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 
 static YmCtx gstYM;
 
-YRet YM_DoRx(YmHandle pfRxHandle, void* pParam)
+void YM_DoRx(YmHandle pfRxHandle, void* pParam)
 {
 	UT_Printf("Send File to Device\n");
 	_Reset(&gstYM);
-	YRet eYRet = YR_DONE;
+	_PktReset(&gstYM.stPktCtx, gstYM.aBuf);
+	gstYM.eState = YS_HEADER;
 	char nRxData;
-	while(UART_RxD(&nRxData));
+	while(UART_RxD(&nRxData)); // Cleanup RX buffer.
 
 	while(1)
 	{
-		if(ym_Rx(&gstYM, pfRxHandle, pParam))
+		if(UART_RxD(&nRxData))
 		{
-			YMState eState = gstYM.eState;
-			if(eState == YS_CANCEL) eYRet = YR_CANCEL;
-			else if(eState == YS_ERROR) eYRet = YR_ERROR;
-
+			gstYM.nPrvTick = Sched_GetTick();
+			gstYM.nCntTO = 0;
+			if(ym_Rx(&gstYM, pfRxHandle, pParam, nRxData))
+		{
 			break;
 		}
 	}
-	return eYRet;
+		else if ((Sched_GetTick() - gstYM.nPrvTick) >= YM_TIMEOUT)
+		{
+			if((gstYM.eState <= YS_DATA) && (gstYM.nCntTO < 5))
+			{
+				gstYM.nPrvTick = Sched_GetTick();
+				gstYM.nCntTO ++;
+				DBG_YM("TO");
+				TxResp(YMODEM_C);
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
 }
 
 bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)

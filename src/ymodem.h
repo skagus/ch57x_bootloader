@@ -31,6 +31,6 @@ RX일때 handler는.
 
 typedef bool (*YmHandle)(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam);
 
-YRet YM_DoRx(YmHandle pfRxHandle, void* pParam);
+void YM_DoRx(YmHandle pfRxHandle, void* pParam);
 YRet YM_DoTx(YmHandle pfTxHandle, void* pParam);
 void YM_Init(void);
