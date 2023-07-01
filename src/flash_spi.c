@@ -249,7 +249,7 @@ bool _ProcWrite(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 	YmInfo* pInfo = (YmInfo*)pParam;
 	switch(eStep)
 	{
-		case YS_HEADER:
+		case YS_META:
 		{
 			nRest = *pnBytes;
 			break;
@@ -344,7 +344,8 @@ void flash_Cmd(uint8 argc, char* argv[])
 	{
 		YmInfo stInfo;
 		stInfo.nAddr = nAddr;
-		YM_DoRx(_ProcWrite, (void*)&stInfo);
+		YReq stReq = {true, _ProcWrite, (void*)&stInfo};
+		YM_Request(&stReq);
 	}
 	else
 	{

@@ -35,3 +35,5 @@ void Sched_Wait(Evts bmEvt, uint16 nTick);
 void Sched_TrigSyncEvt(Evts bmEvt);
 void Sched_TrigAsyncEvt(Evts bmEvt);
 uint16 Sched_GetTick(void);
+
+#define Sched_Yield()			Sched_Wait(0,0)

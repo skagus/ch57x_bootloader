@@ -245,6 +245,10 @@ void CLI_Register(char* szCmd, CmdHandler *pHandle)
 	gnCmds++;
 }
 
+void CLI_RegUartEvt()
+{
+	UART_SetCbf(cbf_RxUart, NULL);
+}
 ///////////////////////
 void CLI_Init(void)
 {
