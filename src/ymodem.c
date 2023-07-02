@@ -48,6 +48,7 @@ typedef enum _YRet
 	YR_DONE,
 	YR_CANCEL,
 	YR_ERROR,
+	YR_TIMEOUT,
 	NUM_YR,
 } YRet;
 
@@ -86,6 +87,8 @@ typedef struct _YCtx
 	uint32		nFileOff;	///< File�� �뷮��, ���� packet�� base.
 	char		szFileName[MAX_FILE_NAME_LEN];
 	
+	uint8		nSeqNo;		///< Sent or Rcvd packet No.
+	uint8		nCntPkt;	///< # of data packet to transfer.
 	PktCtx		stPktCtx;
 	YReq 		stReq;
 } RunCtx;
@@ -381,7 +384,7 @@ bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 		case YS_META:
 		{
 			sprintf((char*)pBuf, "%s", "test.log");
-			*pnBytes = 1024 * 16 + 128;
+			*pnBytes = 1024 * 2 + 100;
 			break;
 		}
 		case YS_DATA:
@@ -398,10 +401,16 @@ bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 	}
 	return true;
 }
-#if 0
 
-void _SendFirst(uint8* pData)
+uint32 _SendFirst(uint8* pData, YmHandle pfTxHandle, void* pParam)
 {
+	int32 nLen;
+
+	pfTxHandle(pData, (uint32*)&nLen, YS_META, pParam);	// Get header.
+	uint32 nSizeOff = strlen((char*)pData) + 1;
+	sprintf((char*)(pData + nSizeOff), "%d", (int)nLen);
+
+	DBG_YM("Meta ->\n");
 	UART_TxD(YMODEM_SOH);
 	UART_TxD(0);
 	UART_TxD(0xFF);
@@ -409,10 +418,16 @@ void _SendFirst(uint8* pData)
 	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_SMALL);
 	UART_TxD(nCRC >> 8);
 	UART_TxD(nCRC & 0xFF);
+	return nLen;
 }
 
-void _SendData(uint8 nSeqNo, uint8* pData)
+void _SendData(uint8* pData, YmHandle pfTxHandle, uint8 nSeqNo, void* pParam)
 {
+	uint32 nThisLen = (nSeqNo - 1) * 1024;
+	pfTxHandle(pData, &nThisLen, YS_DATA, pParam); // Get data.
+
+	DBG_YM("Data(%d) ->\n", nSeqNo);
+	
 	UART_TxD(YMODEM_STX);
 	UART_TxD(nSeqNo);
 	UART_TxD(~nSeqNo);
@@ -424,6 +439,8 @@ void _SendData(uint8 nSeqNo, uint8* pData)
 
 void _SendNull(uint8* pData)
 {
+	DBG_YM("Null ->\n");
+
 	UART_TxD(YMODEM_SOH);
 	UART_TxD(0);
 	UART_TxD(0xFF);
@@ -434,13 +451,13 @@ void _SendNull(uint8* pData)
 	UART_TxD(nCRC & 0xFF);
 }
 
+
 uint8 _WaitResp(void)
 {
 	uint8 nRxData;
 	while(0 == UART_RxD((char*)&nRxData));
 	return nRxData;
 }
-#endif
 
 void YM_DoTx(YmHandle pfTxHandle, void* pParam)
 {
@@ -454,14 +471,8 @@ void YM_DoTx(YmHandle pfTxHandle, void* pParam)
 	DBG_YM("Empty Rcv\n");
 	while(YMODEM_C != _WaitResp());
 	DBG_YM("Start\n");
-	uint8* pPayload = stPkt.aBuf; 
 
-	int32 nLen;
-	pfTxHandle(pPayload, (uint32*)&nLen, YS_META, pParam);	// Get header.
-	uint32 nSizeOff = strlen((char*)pPayload) + 1;
-	sprintf((char*)(pPayload + nSizeOff), "%d", (int)nLen);
-	//gstCtx.stRun.nFileLen = nLen;
-	_SendFirst(stPkt.aBuf);
+	uint32 nLen = _SendFirst(stPkt.aBuf, pfTxHandle, pParam);
 
 	DBG_YM("1st\n");
 	while(YMODEM_ACK != _WaitResp());	// ACK.
@@ -469,16 +480,13 @@ void YM_DoTx(YmHandle pfTxHandle, void* pParam)
 	while(YMODEM_C != _WaitResp());	// C
 	DBG_YM("1st C\n");
 
-	uint8 nSeq = 1;
-	uint32 nThisLen = 1024;
-	while(nLen > 0)
+	uint8 nCntPkt = nLen / 1024;
+	uint8 nSeq = 0;
+	while(nSeq < nCntPkt)
 	{
-		nThisLen = (nSeq - 1) * 1024;
-		pfTxHandle(pPayload, &nThisLen, YS_DATA, pParam); // Get data.
-		_SendData(nSeq, stPkt.aBuf);
+		_SendData(stPkt.aBuf, pfTxHandle, nSeq, pParam);
 		while(YMODEM_ACK != _WaitResp());
 		DBG_YM("Data Ack %d\n", nSeq);
-		nLen -= DATA_BYTE_BIG;
 		nSeq++;
 	}
 
@@ -574,7 +582,16 @@ bool _ymRx(RunCtx* pRun, YReq* pReq)
 	}
 	if(false == bRcv)
 	{
-		UART_TxD(YMODEM_C);
+		if(pRun->nCntTO > (YM_TIMEOUT / YM_RETRY_PERIOD))
+		{
+			pRun->eRet = YR_TIMEOUT;
+			pRun->eState = YS_END;
+			bDone = true;
+		}
+		else
+		{
+			UART_TxD(YMODEM_C);
+		}
 		pRun->nCntTO++;
 	}
 	else
@@ -583,40 +600,106 @@ bool _ymRx(RunCtx* pRun, YReq* pReq)
 	}
 	return bDone;
 }
-#if 0
+#if 1
 bool _ymTx(RunCtx* pRun, YReq* pReq)
 {
 	bool bDone = false;
 	uint8 nRxData;
-	bool bSend = false;
+	if(false == UART_RxD((char*)&nRxData))  // empty receive buffer.
+	{
+		pRun->nCntTO++;
+		if(pRun->nCntTO > YM_TIMEOUT / YM_RETRY_PERIOD)
+		{
+			pRun->eRet = YR_TIMEOUT;
+			pRun->eState = YS_END;
+			bDone = true;
+		}
+		DBG_YM("TO:%d\n", pRun->nCntTO);
+		return bDone;
+	}
+
+	DBG_YM("RX:%X\n", nRxData);
 	switch(pRun->eState)
 	{
 		case YS_META:
 		{
+			if(((YMODEM_C == nRxData) && (0 == pRun->nSeqNo))
+				|| (YMODEM_NACK == nRxData))
+			{
+				// TxMetaPkt(pRun);
+				uint32 nLen = _SendFirst(pRun->stPktCtx.aBuf, pReq->pfHandle, pReq->pParam);
+				pRun->nSeqNo = 1;
+				pRun->nCntPkt = DIV_UP(nLen, DATA_BYTE_BIG);
+			}
+			else if(YMODEM_ACK == nRxData)
+			{
+				pRun->eState = YS_DATA;
+				Sched_Yield();
+			}
 			break;
 		}
 		case YS_DATA:
 		{
-
-		}
-	}
-	if(UART_RxD((char*)&nRxData))
-	{
-		pRun->eState;
-		PktCtx* pPktCtx = &(pRun->stPktCtx);
-
-		if (ym_TxPkt(pPktCtx, nRxData))
-		{
-			DBG_YM("PD:%d, %d\n", pPktCtx->eRet, pPktCtx->nCntRx);
-			if(ym_HandlePkt(pRun, pReq))
+			if(YMODEM_C == nRxData)
 			{
-				DBG_YM("Done: %d\n", pRun->eRet);
+				pRun->nSeqNo = 0;
+				_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+			}
+			else if(YMODEM_ACK == nRxData)
+			{
+				if(pRun->nSeqNo >= pRun->nCntPkt)
+				{
+					DBG_YM("EO>\n");
+					UART_TxD(YMODEM_EOT);
+					pRun->nSeqNo = 0;
+					pRun->eState = YS_END;
+				}
+				else
+				{
+					pRun->nSeqNo++;
+					_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+				}
+			}
+			else if(YMODEM_NACK == nRxData)
+			{
+				_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+			}
+			else if(YMODEM_CAN == nRxData)
+			{
+				DBG_YM("CN->\n");
+				UART_TxD(YMODEM_CAN);
+				UART_TxD(YMODEM_CAN);
+				UART_TxD(YMODEM_CAN);
+				UART_TxD(YMODEM_CAN);
+				pRun->eRet = YR_CANCEL;
 				bDone = true;
 			}
-			_PktReset(pPktCtx);
+			break;
 		}
-		pRun->nPrvTick = Sched_GetTick();
-		pRun->nCntTO = 0;
+		case YS_END:
+		{
+			if((YMODEM_NACK == nRxData) && (0 == pRun->nSeqNo))
+			{
+				DBG_YM("EO>\n");
+				UART_TxD(YMODEM_EOT);
+				pRun->nSeqNo ++;
+			}
+			else if((YMODEM_ACK == nRxData) && (1 == pRun->nSeqNo))
+			{
+				pRun->nSeqNo ++;
+			}
+			else if((YMODEM_C == nRxData) && (2 == pRun->nSeqNo))
+			{
+				pRun->nSeqNo++;
+				_SendNull(pRun->stPktCtx.aBuf);
+			}
+			else if((YMODEM_ACK == nRxData) && (3 == pRun->nSeqNo))
+			{
+				pRun->nSeqNo++;
+				pRun->eRet = YR_DONE;
+				bDone = true;
+			}
+		}
 	}
 	return bDone;
 }
@@ -630,19 +713,13 @@ void ym_Run(Evts bmEvt)
 
 	if(Y_RUN == gstCtx.eState)
 	{
-		bool bDone = false;
-		if(pReq->bRx)
-		{
-			bDone = _ymRx(pRun, pReq);
-		}
-		else // TX case.
-		{
-			bDone = true;
-			//bDone = _ymTx(pRun, pReq);
-		}
+		bool bDone = (pReq->bRx)
+				? _ymRx(pRun, pReq)
+				: _ymTx(pRun, pReq);
 
 		if(bDone)
 		{
+			DBG_YM("Final %d\n", pRun->eRet);
 			char nRxData;
 			while(UART_RxD(&nRxData));  // empty receive buffer.
 
@@ -654,7 +731,7 @@ void ym_Run(Evts bmEvt)
 		}
 		else // End of Transfer.
 		{
-			Sched_Wait(BIT(EVT_UART_YM), YM_TIMEOUT);
+			Sched_Wait(BIT(EVT_UART_YM), YM_RETRY_PERIOD);
 		}
 	}
 	else if(Y_READY == gstCtx.eState) // Start running.

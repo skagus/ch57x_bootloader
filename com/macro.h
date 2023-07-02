@@ -23,8 +23,13 @@
 
 #define MEMSET_SIZE(obj, val)		memset(obj, val, sizeof(obj))
 
-#define ALIGN_DN(nNum, nAlign)		(((nNum) / (nAlign)) * (nAlign))
-#define ALIGN_UP(nNum, nAlign)		((((nNum) + (nAlign) - 1) / (nAlign)) * (nAlign))
+#define DIV_UP(nNum, nAlign)		(((nNum) + (nAlign) - 1) / (nAlign))
+#define DIV_DN(nNum, nAlign)		((nNum) / (nAlign))
+
+#define ALIGN_UP(nNum, nAlign)		(DIV_UP(nNum, nAlign) * (nAlign))
+#define ALIGN_DN(nNum, nAlign)		(DIV_DN(nNum, nAlign) * (nAlign))
+
+
 
 #define MAX(a, b) 					((a) > (b) ? (a) : (b))
 #define MIN(a, b) 					((a) < (b) ? (a) : (b))
