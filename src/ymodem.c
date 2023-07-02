@@ -22,7 +22,7 @@
 #define DATA_BYTE_SMALL		(128)
 #define DATA_BYTE_BIG		(1024)
 #define EXTRA_SIZE			(5)
-#define YMODEM_BUF_LENGTH	(DATA_BYTE_BIG + EXTRA_SIZE)
+//#define YMODEM_BUF_LENGTH	(DATA_BYTE_BIG + EXTRA_SIZE)
 
 #define DBG_YM(...)			HAL_DbgLog(__VA_ARGS__)
 
@@ -68,12 +68,13 @@ typedef struct
 {
 	PktState	ePktState;	// Current packet state.
 	PktRet		eRet;		// Packet RX return.
+
+	uint8		nSeqNo;		///< Sequence number. (from Sender)
 	uint16		nCntRx;		///< Received data count in current state.
 
 	uint16		nSize;		///< total RX size (from Sender)
 	uint16		nRcvCRC;	///< Received CRC. (from sender)
-	uint8		nSeqNo;		///< Sequence number. (from Sender)
-	uint8		aBuf[YMODEM_BUF_LENGTH + 10];
+	uint8		aBuf[DATA_BYTE_BIG];
 } PktCtx;
 
 typedef struct _YCtx
@@ -86,10 +87,16 @@ typedef struct _YCtx
 	uint32		nFileLen;
 	uint32		nFileOff;	///< File�� �뷮��, ���� packet�� base.
 	char		szFileName[MAX_FILE_NAME_LEN];
-	
+
 	uint8		nSeqNo;		///< Sent or Rcvd packet No.
 	uint8		nCntPkt;	///< # of data packet to transfer.
-	PktCtx		stPktCtx;
+	union
+	{
+		PktCtx		stPktCtx;
+		uint8		aTxBuf[DATA_BYTE_BIG + EXTRA_SIZE];
+	};
+	
+
 	YReq 		stReq;
 } RunCtx;
 
@@ -242,7 +249,7 @@ bool ym_RcvPkt(PktCtx *pPktCtx, uint8 nNewData)
 /**
  * return true if All sequence is done.l
 */
-bool ym_HandlePkt(RunCtx *pRun, YReq* pReq)
+bool ym_HandleRxPkt(RunCtx *pRun, YReq* pReq)
 {
 	bool bDone = false;
 	PktCtx* pPktCtx = &(pRun->stPktCtx);
@@ -402,53 +409,57 @@ bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 	return true;
 }
 
-uint32 _SendFirst(uint8* pData, YmHandle pfTxHandle, void* pParam)
+uint32 _SendFirst(uint8* pBase, YmHandle pfTxHandle, void* pParam)
 {
-	int32 nLen;
+	DBG_YM("Null ->\n");
+	uint8* pData = pBase;
+	*pData = YMODEM_SOH; pData++;
+	*pData = 0; pData++;
+	*pData = 0xFF; pData++;
 
+	int32 nLen;
 	pfTxHandle(pData, (uint32*)&nLen, YS_META, pParam);	// Get header.
 	uint32 nSizeOff = strlen((char*)pData) + 1;
 	sprintf((char*)(pData + nSizeOff), "%d", (int)nLen);
-
-	DBG_YM("Meta ->\n");
-	UART_TxD(YMODEM_SOH);
-	UART_TxD(0);
-	UART_TxD(0xFF);
-	UART0_SendString(pData, DATA_BYTE_SMALL);
 	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_SMALL);
-	UART_TxD(nCRC >> 8);
-	UART_TxD(nCRC & 0xFF);
+	pData += DATA_BYTE_SMALL;
+	*pData =(nCRC >> 8); pData++;
+	*pData =(nCRC & 0xFF);
+
+	UART0_SendString(pBase, DATA_BYTE_SMALL + EXTRA_SIZE);
+
 	return nLen;
 }
 
-void _SendData(uint8* pData, YmHandle pfTxHandle, uint8 nSeqNo, void* pParam)
+void _SendData(uint8* pBase, YmHandle pfTxHandle, uint8 nSeqNo, void* pParam)
 {
+	DBG_YM("Data(%d) ->\n", nSeqNo);
+	uint8* pData = pBase;
+	*pData = YMODEM_STX; pData++;
+	*pData = nSeqNo; pData++;
+	*pData = ~nSeqNo; pData++;
 	uint32 nThisLen = (nSeqNo - 1) * 1024;
 	pfTxHandle(pData, &nThisLen, YS_DATA, pParam); // Get data.
-
-	DBG_YM("Data(%d) ->\n", nSeqNo);
-	
-	UART_TxD(YMODEM_STX);
-	UART_TxD(nSeqNo);
-	UART_TxD(~nSeqNo);
-	UART0_SendString(pData, DATA_BYTE_BIG);
 	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_BIG);
-	UART_TxD(nCRC >> 8);
-	UART_TxD(nCRC & 0xFF);
+	pData += DATA_BYTE_BIG;
+	*pData =(nCRC >> 8); pData++;
+	*pData =(nCRC & 0xFF);
+	UART0_SendString(pBase, DATA_BYTE_BIG + EXTRA_SIZE);
 }
 
-void _SendNull(uint8* pData)
+void _SendNull(uint8* pBase)
 {
 	DBG_YM("Null ->\n");
-
-	UART_TxD(YMODEM_SOH);
-	UART_TxD(0);
-	UART_TxD(0xFF);
+	uint8* pData = pBase;
+	*pData = YMODEM_SOH; pData++;
+	*pData = 0; pData++;
+	*pData = 0xFF; pData++;
 	memset(pData, 0x0, DATA_BYTE_SMALL);
-	UART0_SendString(pData, DATA_BYTE_SMALL);
 	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_SMALL);
-	UART_TxD(nCRC >> 8);
-	UART_TxD(nCRC & 0xFF);
+	pData += DATA_BYTE_SMALL;
+	*pData =(nCRC >> 8); pData++;
+	*pData =(nCRC & 0xFF);
+	UART0_SendString(pBase, DATA_BYTE_SMALL + EXTRA_SIZE);
 }
 
 
@@ -569,7 +580,7 @@ bool _ymRx(RunCtx* pRun, YReq* pReq)
 		if (ym_RcvPkt(pPktCtx, nRxData))
 		{
 			DBG_YM("PD:%d, %d\n", pPktCtx->eRet, pPktCtx->nCntRx);
-			if(ym_HandlePkt(pRun, pReq))
+			if(ym_HandleRxPkt(pRun, pReq))
 			{
 				DBG_YM("Done: %d\n", pRun->eRet);
 				bDone = true;
@@ -600,7 +611,7 @@ bool _ymRx(RunCtx* pRun, YReq* pReq)
 	}
 	return bDone;
 }
-#if 1
+
 bool _ymTx(RunCtx* pRun, YReq* pReq)
 {
 	bool bDone = false;
@@ -627,7 +638,7 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 				|| (YMODEM_NACK == nRxData))
 			{
 				// TxMetaPkt(pRun);
-				uint32 nLen = _SendFirst(pRun->stPktCtx.aBuf, pReq->pfHandle, pReq->pParam);
+				uint32 nLen = _SendFirst(pRun->aTxBuf, pReq->pfHandle, pReq->pParam);
 				pRun->nSeqNo = 1;
 				pRun->nCntPkt = DIV_UP(nLen, DATA_BYTE_BIG);
 			}
@@ -643,7 +654,7 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 			if(YMODEM_C == nRxData)
 			{
 				pRun->nSeqNo = 0;
-				_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+				_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
 			}
 			else if(YMODEM_ACK == nRxData)
 			{
@@ -657,12 +668,12 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 				else
 				{
 					pRun->nSeqNo++;
-					_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+					_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
 				}
 			}
 			else if(YMODEM_NACK == nRxData)
 			{
-				_SendData(pRun->stPktCtx.aBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+				_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
 			}
 			else if(YMODEM_CAN == nRxData)
 			{
@@ -691,7 +702,7 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 			else if((YMODEM_C == nRxData) && (2 == pRun->nSeqNo))
 			{
 				pRun->nSeqNo++;
-				_SendNull(pRun->stPktCtx.aBuf);
+				_SendNull(pRun->aTxBuf);
 			}
 			else if((YMODEM_ACK == nRxData) && (3 == pRun->nSeqNo))
 			{
@@ -703,7 +714,6 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 	}
 	return bDone;
 }
-#endif
 
 void ym_Run(Evts bmEvt)
 {
@@ -742,13 +752,13 @@ void ym_Run(Evts bmEvt)
 		if(pReq->bRx)
 		{
 			UT_Printf("Transfer Host --> Device\n");
+			_PktReset(&(pRun->stPktCtx));
 		}
 		else // TX
 		{
 			UT_Printf("Transfer Host <-- Device\n");
 		}
 		_PrepareCtx(pRun);
-		_PktReset(&(pRun->stPktCtx));
 		gstCtx.eState = Y_RUN;
 		Sched_Yield(); // Call again.
 	}

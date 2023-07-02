@@ -15,6 +15,7 @@
 #include "sched.h"
 #include "hal.h"
 #include "util.h"
+#include "led.h"
 #include "cli.h"
 #include "flash_spi.h"
 #include "ymodem.h"
@@ -28,6 +29,7 @@ int main(void)
 	Cbf cbfTick = Sched_Init();
 	TIMER_Init(cbfTick);
 
+	LED_Init();
 	CLI_Init();
 	FLASH_Init();
 	YM_Init();

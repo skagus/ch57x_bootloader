@@ -1,5 +1,6 @@
 
 #include <string.h> // memset.
+#include <stdio.h>
 #include "CH573SFR.h"
 #include "core_riscv.h"
 #include "CH57x_gpio.h"
@@ -237,28 +238,30 @@ uint8 FLASH_Erase(uint32 nSAddr, uint32 nLen)
 	return nRet;
 }
 
-typedef struct _YmInfo
+typedef struct _YmParam
 {
 	uint32 nAddr;
-} YmInfo;
+	uint32 nByte;
+} YmParam;
+YmParam gYParam;
 
 bool _ProcWrite(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 {
-	static uint32 nRest;
 	bool bRet = true;
-	YmInfo* pInfo = (YmInfo*)pParam;
+	YmParam* pInfo = (YmParam*)pParam;
 	switch(eStep)
 	{
 		case YS_META:
 		{
-			nRest = *pnBytes;
+			pInfo->nByte = *pnBytes;
 			break;
 		}
 		case YS_DATA:
 		{
-			FLASH_Write(pBuf, pInfo->nAddr, *pnBytes);
-			pInfo->nAddr += *pnBytes;
-			nRest -= *pnBytes;
+			uint32 nLen = MIN(pInfo->nByte, *pnBytes);
+			FLASH_Write(pBuf, pInfo->nAddr, nLen);
+			pInfo->nAddr += nLen;
+			pInfo->nByte -= nLen;
 			break;
 		}
 		default:
@@ -269,10 +272,50 @@ bool _ProcWrite(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 	return bRet;
 }
 
+
+bool _ProcRead(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
+{
+	bool bRet = true;
+	YmParam* pInfo = (YmParam*)pParam;
+	switch(eStep)
+	{
+		case YS_META:
+		{
+			sprintf((char*)pBuf, "0x%X_fr.bin", (int)pInfo->nAddr);
+			*pnBytes = pInfo->nByte;
+			break;
+		}
+		case YS_DATA:
+		{
+			uint32 nLen = MIN(pInfo->nByte, *pnBytes);
+			FLASH_Read(pBuf, pInfo->nAddr, nLen);
+			pInfo->nAddr += nLen;
+			pInfo->nByte -= nLen;
+			break;
+		}
+		default:
+		{
+			break;
+		}
+	}
+	return bRet;
+}
+
+void _printUsage(void)
+{
+	UT_Printf("\ti - show flash ID\n");
+	UT_Printf("\te <Addr> <Size> - Erase flash\n");
+	UT_Printf("\tr <Addr> <Size> - Read flash and show\n");
+	UT_Printf("\tf <Addr> <Size> [Pat=0xAA] - Fill flash with pattern\n");
+	UT_Printf("\tW <Addr> - Write received data (user Ymodem)\n");
+	UT_Printf("\tR <Addr> <Size> - Read flash and send it via Ymodem\n");
+}
+
 void flash_Cmd(uint8 argc, char* argv[])
 {
 	if(argc < 2)
 	{
+		_printUsage();
 		return;
 	}
 	
@@ -297,15 +340,6 @@ void flash_Cmd(uint8 argc, char* argv[])
 		uint32 nId = _ReadId();
 		UT_Printf("FLASH ID: %X\n", nId);
 	}
-	else if (nCmd == 'p' && argc >= 3)
-	{
-		uint8 nResp = _ReadProt(nAddr);
-		UT_Printf("Prot: %X, %X\n", nAddr, nResp);
-		if(nByte != 0)
-		{
-			_Protect(nAddr);
-		}
-	}
 	else if (nCmd == 'r' && argc >= 4) // r 8
 	{
 		nAddr = ALIGN_DN(nAddr, PAGE_SIZE);
@@ -320,7 +354,7 @@ void flash_Cmd(uint8 argc, char* argv[])
 			nByte -= nThis;
 		}
 	}
-	else if(nCmd == 'w' && argc >= 4) // cmd w addr byte
+	else if(nCmd == 'f' && argc >= 4) // cmd w addr byte
 	{
 		uint8 nVal = (argc < 5) ? 0xAA : UT_GetInt(argv[4]);
 
@@ -342,14 +376,20 @@ void flash_Cmd(uint8 argc, char* argv[])
 	}
 	else if(nCmd == 'W' && argc >= 3) // Write with Y modem.
 	{
-		YmInfo stInfo;
-		stInfo.nAddr = nAddr;
-		YReq stReq = {true, _ProcWrite, (void*)&stInfo};
+		gYParam.nAddr = nAddr;
+		YReq stReq = {true, _ProcWrite, (void*)&gYParam};
+		YM_Request(&stReq);
+	}
+	else if(nCmd == 'R' && argc >= 4) // Write with Y modem.
+	{
+		gYParam.nAddr = nAddr;
+		gYParam.nByte = nByte;
+		YReq stReq = {false, _ProcRead, (void*)&gYParam};
 		YM_Request(&stReq);
 	}
 	else
 	{
-		UT_Printf("Wrong command\n");
+		_printUsage();
 	}
 }
 

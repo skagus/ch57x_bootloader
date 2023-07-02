@@ -5,6 +5,7 @@
 
 typedef enum _TaskId
 {
+	TID_LED,
 	TID_CONSOLE,
 	TID_BUT,
 	TID_YMODEM,
@@ -18,6 +19,7 @@ typedef enum _Evt
 	EVT_UART_YM,	///< UART Event for Y modem.
 	EVT_ECALL_DONE,
 	EVT_YMODEM,			///< Ymodem request or done.
+	EVT_LED_CMD,
 	NUM_EVT,
 } EvtId;
  
