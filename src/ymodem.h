@@ -10,7 +10,7 @@ typedef enum
 } YMState;
 
 
-#define YM_TIMEOUT			(1000)	// 10 secs.
+#define YM_TIMEOUT			(2000)	// 20 secs.
 #define YM_RETRY_PERIOD		(100)	// 1 sec.
 /**
 YModem에 뭔가를 요청할 때에는 Handler를 넘겨줘야 한다. 

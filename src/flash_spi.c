@@ -318,7 +318,7 @@ void flash_Cmd(uint8 argc, char* argv[])
 		_printUsage();
 		return;
 	}
-	
+
 	uint8 aBuf[PAGE_SIZE];
 
 	// flash <cmd> <addr> <size> <opt>

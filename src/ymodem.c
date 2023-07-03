@@ -125,6 +125,7 @@ void _PrepareCtx(RunCtx* pRun)
 	pRun->eState = YS_META;
 	pRun->nPrvTick = 0;
 	pRun->nCntTO = 0;
+	pRun->nSeqNo = 0;
 	pRun->eRet = YR_DONE;
 }
 
@@ -411,7 +412,7 @@ bool _TxHandle(uint8* pBuf, uint32* pnBytes, YMState eStep, void* pParam)
 
 uint32 _SendFirst(uint8* pBase, YmHandle pfTxHandle, void* pParam)
 {
-	DBG_YM("Null ->\n");
+	DBG_YM("First->\n");
 	uint8* pData = pBase;
 	*pData = YMODEM_SOH; pData++;
 	*pData = 0; pData++;
@@ -434,16 +435,18 @@ uint32 _SendFirst(uint8* pBase, YmHandle pfTxHandle, void* pParam)
 void _SendData(uint8* pBase, YmHandle pfTxHandle, uint8 nSeqNo, void* pParam)
 {
 	DBG_YM("Data(%d) ->\n", nSeqNo);
+
 	uint8* pData = pBase;
 	*pData = YMODEM_STX; pData++;
 	*pData = nSeqNo; pData++;
 	*pData = ~nSeqNo; pData++;
-	uint32 nThisLen = (nSeqNo - 1) * 1024;
+	uint32 nThisLen = DATA_BYTE_BIG;
 	pfTxHandle(pData, &nThisLen, YS_DATA, pParam); // Get data.
 	uint16 nCRC = UT_Crc16(pData, DATA_BYTE_BIG);
 	pData += DATA_BYTE_BIG;
 	*pData =(nCRC >> 8); pData++;
 	*pData =(nCRC & 0xFF);
+
 	UART0_SendString(pBase, DATA_BYTE_BIG + EXTRA_SIZE);
 }
 
@@ -629,7 +632,9 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 		return bDone;
 	}
 
-	DBG_YM("RX:%X\n", nRxData);
+	DBG_YM("RX:%X, %d\n", nRxData, pRun->eState);
+	pRun->nCntTO = 0;
+
 	switch(pRun->eState)
 	{
 		case YS_META:
@@ -654,10 +659,12 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 			if(YMODEM_C == nRxData)
 			{
 				pRun->nSeqNo = 0;
-				_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+				// Data packet은 1부터 시작.
+				_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo + 1, pReq->pParam);
 			}
 			else if(YMODEM_ACK == nRxData)
 			{
+				pRun->nSeqNo++;
 				if(pRun->nSeqNo >= pRun->nCntPkt)
 				{
 					DBG_YM("EO>\n");
@@ -667,8 +674,7 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 				}
 				else
 				{
-					pRun->nSeqNo++;
-					_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo, pReq->pParam);
+					_SendData(pRun->aTxBuf, pReq->pfHandle, pRun->nSeqNo + 1, pReq->pParam);
 				}
 			}
 			else if(YMODEM_NACK == nRxData)
@@ -708,6 +714,11 @@ bool _ymTx(RunCtx* pRun, YReq* pReq)
 			{
 				pRun->nSeqNo++;
 				pRun->eRet = YR_DONE;
+				bDone = true;
+			}
+			else
+			{
+				pRun->eRet = YR_ERROR;
 				bDone = true;
 			}
 		}
