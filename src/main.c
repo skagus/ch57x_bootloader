@@ -15,12 +15,9 @@
 #include "sched.h"
 #include "hal.h"
 #include "util.h"
-#include "led.h"
 #include "cli.h"
-#include "flash_spi.h"
-#include "ymodem.h"
 
-int main(void)
+int main2(void)
 {
 	SetSysClock(CLK_SOURCE_PLL_60MHz);
 //	DelayMs(1000); // Wait 1 sec.
@@ -29,10 +26,7 @@ int main(void)
 	Cbf cbfTick = Sched_Init();
 	TIMER_Init(cbfTick);
 
-	LED_Init();
 	CLI_Init();
-	FLASH_Init();
-	YM_Init();
 
 	UT_Printf(gpVersion);
 	HAL_DbgLog("Hello\n");

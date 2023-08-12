@@ -44,15 +44,15 @@ _vector_base:
 		j   DEF_IRQHandler		/* SPI0 */
 		j   DEF_IRQHandler		/* BLEB */
 		j   DEF_IRQHandler		/* BLEL */
-		j   DEF_IRQHandler		/* USB */
-		j DEF_IRQHandler
+		j   USB_IRQHandler		/* USB */
+		j   DEF_IRQHandler
 		j   DEF_IRQHandler		/* TMR1 */
 		j   DEF_IRQHandler		/* TMR2 */
 		j   UART0_IRQHandler	/* UART0 */
 		j   DEF_IRQHandler		/* UART1 */
 		j   DEF_IRQHandler		/* RTC */
 		j   DEF_IRQHandler		/* ADC */
-		j DEF_IRQHandler
+		j   DEF_IRQHandler
 		j   DEF_IRQHandler		/* PWMX */
 		j   DEF_IRQHandler		/* TMR3 */
 		j   DEF_IRQHandler		/* UART2 */
