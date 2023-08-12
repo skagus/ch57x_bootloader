@@ -125,7 +125,6 @@ void USB_DevTransProcess(void)
 			{
 				case UIS_TOKEN_IN | 0:	// D2H
 				{
-					HAL_DbgLog("\t0I: %8X, %d\n", SetupReqCode, SetupReqLen);
 					switch(SetupReqCode)
 					{
 						case USB_GET_DESCRIPTOR:	// 0x6
@@ -135,6 +134,8 @@ void USB_DevTransProcess(void)
 							pDescr += len;
 							R8_UEP0_T_LEN = len;
 							R8_UEP0_CTRL ^= RB_UEP_T_TOG; // 翻转
+							HAL_DbgLog("\tS D2H %d\n", len);
+
 							break;
 
 						case USB_SET_ADDRESS:	// 0x5
@@ -289,6 +290,7 @@ void USB_DevTransProcess(void)
 			}
 			else /* 标准请求 */
 			{
+
 				switch(SetupReqCode)
 				{
 					case USB_GET_DESCRIPTOR:
@@ -554,6 +556,12 @@ void USB_DevTransProcess(void)
 						break;
 				}
 			}
+
+			HAL_DbgLog("Std Desc (%X, %X, %X) -> %d\n",
+					pSetupReqPak->bRequest, pSetupReqPak->wValue >> 8, pSetupReqPak->wValue & 0xFF,
+					len);
+
+
 			if(errflag == 0xff) // 错误或不支持
 			{
 				//                  SetupReqCode = 0xFF;
@@ -570,6 +578,7 @@ void USB_DevTransProcess(void)
 					len = 0; // 下传
 				R8_UEP0_T_LEN = len;
 				R8_UEP0_CTRL = RB_UEP_R_TOG | RB_UEP_T_TOG | UEP_R_RES_ACK | UEP_T_RES_ACK; // 默认数据包是DATA1
+				HAL_DbgLog("\tS d2H %d\n", len);
 			}
 
 			R8_USB_INT_FG = RB_UIF_TRANSFER;
