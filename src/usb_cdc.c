@@ -30,8 +30,8 @@ __attribute__((aligned(4))) uint8_t  gaBuf4EP1[64 + 64];      //ep1_out(64)+ep1_
 __attribute__((aligned(4))) uint8_t  gaBuf4EP2[64 + 64];      //ep2_out(64)+ep2_in(64)
 __attribute__((aligned(4))) uint8_t  gaBuf4EP3[64 + 64];      //ep3_out(64)+ep3_in(64)
 
-RingBuf gUartFifoB = {.nWrIdx = 0,.nRdIdx = 0,.nCnt = 0,};
-RingBuf gUartFifoA = {.nWrIdx = 0,.nRdIdx = 0,.nCnt = 0,};
+RingBuf gUartFifoB;
+RingBuf gUartFifoA;
 
 inline void UEP_DONE_D2H(uint8_t nEP)
 {
@@ -87,9 +87,9 @@ inline void UEP_TRIG_D2H(uint8_t nEP, uint8_t nTxLen)
 }
 
 /**
- * Just send response, NOT resource free.
+ * Response with NAK <-- Host should wait for ACK.
 */
-inline void UEP_RESP_H2D(uint8_t nEP)
+inline void UEP_RESP_H2D_NAK(uint8_t nEP)
 {
 	if(1 == nEP)
 	{
@@ -109,46 +109,56 @@ inline void UEP_RESP_H2D(uint8_t nEP)
 	}
 }
 
-inline void UEP_DONE_H2D(uint8_t nEP)
+/**
+ * Response with ACK. <-- All complete.
+*/
+inline void UEP_DONE_H2D_ACK(uint8_t nEP)
 {
 	if(1 == nEP)
 	{
-		R8_UEP1_CTRL = R8_UEP1_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
+		R8_UEP1_CTRL = (R8_UEP1_CTRL & (~MASK_UEP_R_RES)) | UEP_R_RES_ACK;
 	}
 	else if(2 == nEP)
 	{
-		R8_UEP2_CTRL = R8_UEP2_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
+		R8_UEP2_CTRL = (R8_UEP2_CTRL & (~MASK_UEP_R_RES)) | UEP_R_RES_ACK;
 	}
 	else if(3 == nEP)
 	{
-		R8_UEP3_CTRL = R8_UEP3_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
+		R8_UEP3_CTRL = (R8_UEP3_CTRL & (~MASK_UEP_R_RES)) | UEP_R_RES_ACK;
 	}
 	else if(4 == nEP)
 	{
-		R8_UEP4_CTRL = R8_UEP4_CTRL & ~ MASK_UEP_R_RES | UEP_R_RES_ACK;
+		R8_UEP4_CTRL = (R8_UEP4_CTRL & (~MASK_UEP_R_RES)) | UEP_R_RES_ACK;
 	}
 }
 
-inline uint16_t uart_fifo_length(RingBuf* pstFifo)
+inline void fifo_init(RingBuf* pstFifo)
+{
+	pstFifo->nCnt = 0;
+	pstFifo->nRdIdx = 0;
+	pstFifo->nWrIdx = 0;
+}
+
+inline uint16_t fifo_length(RingBuf* pstFifo)
 {
 	return pstFifo->nCnt;
 }
 
-inline uint8_t uart_fifo_is_empty(RingBuf* pstFifo)
+inline uint8_t fifo_is_empty(RingBuf* pstFifo)
 {
 	return (0 == pstFifo->nCnt);
 }
 
 // Called from ISR ONLY.
-inline uint8_t uart_fifo_is_full(RingBuf* pstFifo)
+inline uint8_t fifo_is_full(RingBuf* pstFifo)
 {
-	return (uart_fifo_length(pstFifo) == UART_FIFO_SIZE);
+	return (fifo_length(pstFifo) == UART_FIFO_SIZE);
 }
 
 // Called from ISR ONLY.
-inline void uart_fifo_put(RingBuf* pstFifo, uint8_t nData)
+inline void fifo_put(RingBuf* pstFifo, uint8_t nData)
 {
-	if (!uart_fifo_is_full(pstFifo))
+	if (!fifo_is_full(pstFifo))
 	{
 		pstFifo->aRing[pstFifo->nWrIdx] = nData;
 		pstFifo->nWrIdx = (pstFifo->nWrIdx + 1) % UART_FIFO_SIZE;
@@ -156,9 +166,9 @@ inline void uart_fifo_put(RingBuf* pstFifo, uint8_t nData)
 	}
 }
 
-inline void uart_fifo_get_without_check(RingBuf* pstFifo, uint8_t* pData)
+inline void fifo_get_without_check(RingBuf* pstFifo, uint8_t* pData)
 {
-	while(uart_fifo_is_empty(pstFifo));
+	while(fifo_is_empty(pstFifo));
 //	EA = 0;
 	*pData = pstFifo->aRing[pstFifo->nRdIdx];
 	pstFifo->nRdIdx = (pstFifo->nRdIdx + 1) % UART_FIFO_SIZE;
@@ -207,17 +217,17 @@ static CdcDev gaCdc[NUM_CDC] =
 * Description    : USB device mode endpoint configuration, simulation compatible HID device, in addition to endpoint 0 control transmission, also includes endpoint 2 batch upload
 *******************************************************************************/
 
-uint32_t get_baud_rate(uint8_t* acm_line_code)
+uint32_t get_baud_rate(uint8_t* aAcmLineCode)
 {
 	uint32_t nBaudRate = 0;
 
-	nBaudRate |= acm_line_code[3];
+	nBaudRate |= aAcmLineCode[3];
 	nBaudRate <<= 8;
-	nBaudRate |= acm_line_code[2];
+	nBaudRate |= aAcmLineCode[2];
 	nBaudRate <<= 8;
-	nBaudRate |= acm_line_code[1];
+	nBaudRate |= aAcmLineCode[1];
 	nBaudRate <<= 8;
-	nBaudRate |= acm_line_code[0];
+	nBaudRate |= aAcmLineCode[0];
 	return nBaudRate;
 }
 
@@ -328,7 +338,7 @@ void handleIrqH2D(uint8_t nEP)
 			{
 				case SET_LINE_CODING:
 				{
-					LOG("Set LC\n");
+					LOG("Set LC I:%X len:%d\n", gstUsbLastSetupReq.wIndex, R8_USB_RX_LEN);
 
 					if ((gstUsbLastSetupReq.wIndex & 0xFF) == 0) /* interface 0 is CDC0 */
 					{
@@ -362,6 +372,7 @@ void handleIrqH2D(uint8_t nEP)
 				}
 				default:
 				{
+					LOG("EP0 RX I:%X len:%d\n", gstUsbLastSetupReq.wIndex, R8_USB_RX_LEN);
 					R8_UEP0_T_LEN = 0;
 					R8_UEP0_CTRL |= UEP_R_RES_ACK | UEP_T_RES_NAK;
 					break;
@@ -371,12 +382,12 @@ void handleIrqH2D(uint8_t nEP)
 		else if(2 == nEP)
 		{
 			gaCdc[0].nH2DSize = R8_USB_RX_LEN;
-			UEP_RESP_H2D(nEP);
+			UEP_RESP_H2D_NAK(nEP);
 		}
 		else if(3 == nEP)
 		{
 			gaCdc[1].nH2DSize = R8_USB_RX_LEN;
-			UEP_RESP_H2D(nEP);
+			UEP_RESP_H2D_NAK(nEP);
 		}
 	}
 }
@@ -495,8 +506,8 @@ int handleSetupVendor(USB_SETUP_REQ* pstReq)
 			}
 			break;
 		}
-		case SET_CONTROL_LINE_STATE:
 		case SET_LINE_CODING:
+		case SET_CONTROL_LINE_STATE:
 			gXferCtx.pXferAddr = NULL;
 			gXferCtx.nXferSize = 0;
 			/* setting data packet defined in EP0 packet out */
@@ -619,9 +630,9 @@ void uart0_isr_call(void)
 	if (RI)
 	{
 		uint8_t nRcv = SBUF;
-		uart_fifo_put(&gUartFifoA, nRcv);
+		fifo_put(&gUartFifoA, nRcv);
 #if (EN_SNIFF == 1)
-		uart_fifo_put(&gUartFifoSniff, nRcv);
+		fifo_put(&gUartFifoSniff, nRcv);
 #endif
 		RI = 0;
 	}
@@ -634,7 +645,7 @@ void uart1_isr_call(void)
 	if (U1RI)
 	{
 		uint8_t nRcv = SBUF1;
-		uart_fifo_put(&gUartFifoB, nRcv);
+		fifo_put(&gUartFifoB, nRcv);
 		U1RI = 0;
 	}
 #endif
@@ -648,7 +659,7 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 	uint8_t* aOutBuf = pCdc->pOutBuf;
 	uint8_t* aInBuf = pCdc->pInBuf;
 
-	nTxLen = uart_fifo_length(pCdc->pFifo);
+	nTxLen = fifo_length(pCdc->pFifo);
 	if ((nTxLen > 0) && (0 == pCdc->bRunD2H))
 	{
 		if ((anTimeChk[nCdcId] > 20)
@@ -663,25 +674,25 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 			for (int i = 0; i < nTxLen; i++)
 			{
 				uint8_t cRcv;
-				uart_fifo_get_without_check(pCdc->pFifo, &cRcv);
+				fifo_get_without_check(pCdc->pFifo, &cRcv);
 				aOutBuf[i] = cRcv;
 			}
 			pCdc->bRunD2H = 1;
 #if 0
 			if(1 == pCdc->nEP)
 			{
-				uart_fifo_put(&gUartFifoSniff, ',');
-				uart_fifo_put(&gUartFifoSniff, 'S');
-				uart_fifo_put(&gUartFifoSniff, '0' + nTxLen / 10);
-				uart_fifo_put(&gUartFifoSniff, '0' + nTxLen % 10);
+				fifo_put(&gUartFifoSniff, ',');
+				fifo_put(&gUartFifoSniff, 'S');
+				fifo_put(&gUartFifoSniff, '0' + nTxLen / 10);
+				fifo_put(&gUartFifoSniff, '0' + nTxLen % 10);
 			}
 #endif
 #if (EN_DBG == 1) // debug
 			if(0 == nCdcId)
 			{
 				aOutBuf[0] = '#';
-				uart_fifo_put(&gUartFifoB, '0' + nTxLen / 10);
-				uart_fifo_put(&gUartFifoB, '0' + nTxLen % 10);
+				fifo_put(&gUartFifoB, '0' + nTxLen / 10);
+				fifo_put(&gUartFifoB, '0' + nTxLen % 10);
 			}
 #endif
 			UEP_TRIG_D2H(pCdc->nEP, nTxLen);
@@ -701,7 +712,7 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 		{
 			CH554UART0SendByte(nData);
 #if (EN_SNIFF == 1)
-			uart_fifo_put(&gUartFifoB, nData);
+			fifo_put(&gUartFifoB, nData);
 #endif
 		}
 		else if(1 == nCdcId)
@@ -713,35 +724,15 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 		{
 			pCdc->nNext2Uart = 0;
 			/* gstCdc0: ready, continue recving */
-			UEP_DONE_H2D(pCdc->nEP);
+			UEP_DONE_H2D_ACK(pCdc->nEP);
 		}
 	}	
 }
 
 void CDC_Init()
 {
-	R8_USB_CTRL = 0x00; // 先设定模式,取消 RB_UC_CLR_ALL
-
-	R8_UEP4_1_MOD = RB_UEP4_RX_EN | RB_UEP4_TX_EN | RB_UEP1_RX_EN | RB_UEP1_TX_EN; // 端点4 OUT+IN,端点1 OUT+IN
-	R8_UEP2_3_MOD = RB_UEP2_RX_EN | RB_UEP2_TX_EN | RB_UEP3_RX_EN | RB_UEP3_TX_EN; // 端点2 OUT+IN,端点3 OUT+IN
-
-	R16_UEP0_DMA = (uint16_t)(uint32_t)pEP0_RAM_Addr;
-	R16_UEP1_DMA = (uint16_t)(uint32_t)pEP1_RAM_Addr;
-	R16_UEP2_DMA = (uint16_t)(uint32_t)pEP2_RAM_Addr;
-	R16_UEP3_DMA = (uint16_t)(uint32_t)pEP3_RAM_Addr;
-
-	R8_UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-	R8_UEP1_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP2_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP3_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP4_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-
-	R8_USB_DEV_AD = 0x00;
-	R8_USB_CTRL = RB_UC_DEV_PU_EN | RB_UC_INT_BUSY | RB_UC_DMA_EN; // 启动USB设备及DMA，在中断期间中断标志未清除前自动返回NAK
-	R16_PIN_ANALOG_IE |= RB_PIN_USB_IE | RB_PIN_USB_DP_PU;         // 防止USB端口浮空及上拉电阻
-	R8_USB_INT_FG = 0xFF;                                          // 清中断标志
-	R8_UDEV_CTRL = RB_UD_PD_DIS | RB_UD_PORT_EN;                   // 允许USB端口
-	R8_USB_INT_EN = RB_UIE_SUSPEND | RB_UIE_BUS_RST | RB_UIE_TRANSFER;
+	fifo_init(&gUartFifoB);
+	fifo_init(&gUartFifoB);
 }
 
 void DebugInit(void)
@@ -764,6 +755,7 @@ void main()
 	pEP3_RAM_Addr = gaBuf4EP3;
 
 	USB_DeviceInit();
+	CDC_Init();
 	PFIC_EnableIRQ(USB_IRQn);
 
 	while(1)
@@ -771,8 +763,8 @@ void main()
 		mDelaymS(10);
 		if(gXferCtx.nCfg)
 		{
-	//		handle_cdc(0, &gaCdc[0]);
-	//		handle_cdc(1, &gaCdc[1]);
+			handle_cdc(0, &gaCdc[0]);
+			handle_cdc(1, &gaCdc[1]);
 		}
 	}
 }
