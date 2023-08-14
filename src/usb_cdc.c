@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "macro.h"
 #include "CH57x_common.h"
 #include "CH573SFR.h"
 #include "CH57X_usbdev.h"
@@ -9,8 +10,10 @@
 
 #define EN_SNIFF					(0)
 #define EN_DBG						(0)
+#define EN_LOOPBACK					(1)
 
-#define LOG(...)					HAL_DbgLog(__VA_ARGS__)
+//#define LOG(...)					HAL_DbgLog(__VA_ARGS__)
+#define LOG(...)
 
 #define EP_SIZE_BULK				(MAX_PACKET_SIZE)
 #define EP_SIZE_INT					(DEFAULT_ENDP0_SIZE)
@@ -30,8 +33,7 @@ __attribute__((aligned(4))) uint8_t  gaBuf4EP1[64 + 64];      //ep1_out(64)+ep1_
 __attribute__((aligned(4))) uint8_t  gaBuf4EP2[64 + 64];      //ep2_out(64)+ep2_in(64)
 __attribute__((aligned(4))) uint8_t  gaBuf4EP3[64 + 64];      //ep3_out(64)+ep3_in(64)
 
-RingBuf gUartFifoB;
-RingBuf gUartFifoA;
+RingBuf gaUartInFifo[NUM_CDC];
 
 inline void UEP_DONE_D2H(uint8_t nEP)
 {
@@ -180,14 +182,21 @@ inline void fifo_get_without_check(RingBuf* pstFifo, uint8_t* pData)
 typedef struct _CdcDev
 {
 	uint8_t		anLineCoding[7];	// CDC configuration information.
-	uint8_t		bRunD2H;
-	uint8_t		nH2DSize;
-	uint8_t		nNext2Uart;			// index pointing char in EP. (to out via UART)
 	uint8_t		nEP;
+	
+	int8_t		bRunD2H;
+	int8_t		nH2DSize;
+	uint8_t		nNext2Uart;			// index pointing char in EP. (to out via UART)
+
 	uint8_t*	pInBuf;
 	uint8_t*	pOutBuf;
 	RingBuf*	pFifo;
 } CdcDev;
+
+typedef struct _Fifo
+{
+
+} Fifo;
 
 static CdcDev gaCdc[NUM_CDC] = 
 {
@@ -199,7 +208,7 @@ static CdcDev gaCdc[NUM_CDC] =
 		.nEP = 2,
 		.pInBuf = gaBuf4EP2,
 		.pOutBuf = gaBuf4EP2 + EP_SIZE_BULK,
-		.pFifo = &gUartFifoA,
+		.pFifo = &gaUartInFifo[0],
 	},
 	{ // B,
 		.anLineCoding = { 0x00, 0xe1, 0x00, 0x00, 0x00, 0x00, 0x08 },
@@ -209,9 +218,10 @@ static CdcDev gaCdc[NUM_CDC] =
 		.nEP = 3,
 		.pInBuf = gaBuf4EP3,
 		.pOutBuf = gaBuf4EP3 + EP_SIZE_BULK,
-		.pFifo = &gUartFifoB,
+		.pFifo = &gaUartInFifo[1],
 	},
 };
+
 
 /*******************************************************************************
 * Description    : USB device mode endpoint configuration, simulation compatible HID device, in addition to endpoint 0 control transmission, also includes endpoint 2 batch upload
@@ -246,9 +256,10 @@ USB_SETUP_REQ gstUsbLastSetupReq;	// Previous Setup request copy.
 void handleIrqReset(void)
 {
 	R8_UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-	R8_UEP1_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-	R8_UEP2_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-	R8_UEP3_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
+	R8_UEP1_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+	R8_UEP2_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+	R8_UEP3_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+	R8_UEP4_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
 
 	R8_USB_DEV_AD = 0;
 	R8_USB_INT_FG |= RB_UIF_BUS_RST | RB_UIF_TRANSFER | RB_UIF_SUSPEND;
@@ -261,6 +272,7 @@ void handleIrqReset(void)
 const uint8_t* gaNum2Hex = "0123456789ABCDEF";
 void handleIrqD2H(uint8_t nEP, uint8_t nDbgVal)
 {
+	UNUSED(nDbgVal);
 	LOG("\t(%d) Done D%d->H\n", __LINE__, nEP);
 
 	if(0 == nEP)
@@ -285,12 +297,10 @@ void handleIrqD2H(uint8_t nEP, uint8_t nDbgVal)
 
 				memcpy(gaBuf4EP0, gXferCtx.pXferAddr, nTxLen);
 				R8_UEP0_T_LEN = nTxLen;
-				R8_UEP0_CTRL ^= RB_UEP_T_TOG;	// Re-Transfer.
-//				R8_UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
+				R8_UEP0_CTRL ^= RB_UEP_T_TOG;
 				gXferCtx.pXferAddr += nTxLen;
 				gXferCtx.nXferSize -= nTxLen;
 				LOG("\t(%d) D0->H: %d\n", __LINE__, nTxLen);
-
 				break;
 			}
 			case USB_SET_ADDRESS:
@@ -328,7 +338,7 @@ void handleIrqH2D(uint8_t nEP)
 {
 	CdcDev *pstCdc = NULL;
 	uint8_t bmInt = R8_USB_INT_FG;
-	LOG("\t(%d) H->D%d Done\n", __LINE__, nEP);
+	LOG("\t(%d) H->D%d Done %X\n", __LINE__, nEP, bmInt);
 
 	if (bmInt & RB_U_TOG_OK)  /* Out of sync packets will be dropped. */
 	{
@@ -382,11 +392,13 @@ void handleIrqH2D(uint8_t nEP)
 		else if(2 == nEP)
 		{
 			gaCdc[0].nH2DSize = R8_USB_RX_LEN;
+			gaCdc[0].nNext2Uart = 0;
 			UEP_RESP_H2D_NAK(nEP);
 		}
 		else if(3 == nEP)
 		{
 			gaCdc[1].nH2DSize = R8_USB_RX_LEN;
+			gaCdc[1].nNext2Uart = 0;
 			UEP_RESP_H2D_NAK(nEP);
 		}
 	}
@@ -624,31 +636,19 @@ void USB_IRQHandler(void)
 	HandleUSB();
 }
 
+void cbUartRcv(uint8_t nId, uint8_t nCh)
+{
+	fifo_put(&gaUartInFifo[nId], nCh);
+}
+
 void uart0_isr_call(void)
 {
-#if 0
-	if (RI)
-	{
-		uint8_t nRcv = SBUF;
-		fifo_put(&gUartFifoA, nRcv);
-#if (EN_SNIFF == 1)
-		fifo_put(&gUartFifoSniff, nRcv);
-#endif
-		RI = 0;
-	}
-#endif
+	cbUartRcv(0, 'A');
 }
 
 void uart1_isr_call(void)
 {
-#if 0
-	if (U1RI)
-	{
-		uint8_t nRcv = SBUF1;
-		fifo_put(&gUartFifoB, nRcv);
-		U1RI = 0;
-	}
-#endif
+	cbUartRcv(0, 'B');
 }
 
 void handle_cdc(int nCdcId, CdcDev* pCdc)
@@ -665,7 +665,6 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 		if ((anTimeChk[nCdcId] > 20)
 			|| (nTxLen >= (EP_SIZE_BULK / 2)))
 		{
-			uint8_t nOrgLen = nTxLen;
 			if(nTxLen > EP_SIZE_BULK - 1)
 			{
 				nTxLen = EP_SIZE_BULK - 1;
@@ -678,15 +677,6 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 				aOutBuf[i] = cRcv;
 			}
 			pCdc->bRunD2H = 1;
-#if 0
-			if(1 == pCdc->nEP)
-			{
-				fifo_put(&gUartFifoSniff, ',');
-				fifo_put(&gUartFifoSniff, 'S');
-				fifo_put(&gUartFifoSniff, '0' + nTxLen / 10);
-				fifo_put(&gUartFifoSniff, '0' + nTxLen % 10);
-			}
-#endif
 #if (EN_DBG == 1) // debug
 			if(0 == nCdcId)
 			{
@@ -707,32 +697,42 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 	if (pCdc->nH2DSize > 0)
 	{
 		uint8_t nData = aInBuf[pCdc->nNext2Uart++];
-#if 0
+
+#if (EN_LOOPBACK == 1)
+		HAL_DbgLog("%c", nData);
+		// Device에서 Host로 보내는 과정에서 packet 누락 생김..
 		if(0 == nCdcId)
 		{
-			CH554UART0SendByte(nData);
-#if (EN_SNIFF == 1)
-			fifo_put(&gUartFifoB, nData);
-#endif
+			fifo_put(&gaUartInFifo[1], nData);
 		}
 		else if(1 == nCdcId)
 		{
-			CH554UART1SendByte(nData);
+			fifo_put(&gaUartInFifo[0], nData);
+		}
+#else
+		if(0 == nCdcId)
+		{
+			//CH554UART0SendByte(nData);
+		}
+		else if(1 == nCdcId)
+		{
+			//CH554UART1SendByte(nData);
 		}
 #endif
-		if (--pCdc->nH2DSize == 0)
+		pCdc->nH2DSize--;
+		if (pCdc->nH2DSize == 0)
 		{
-			pCdc->nNext2Uart = 0;
+			LOG("ACK:%d\n", pCdc->nEP);
 			/* gstCdc0: ready, continue recving */
 			UEP_DONE_H2D_ACK(pCdc->nEP);
 		}
 	}	
 }
 
-void CDC_Init()
+void CDC_Init(void)
 {
-	fifo_init(&gUartFifoB);
-	fifo_init(&gUartFifoB);
+	fifo_init(&gaUartInFifo[0]);
+	fifo_init(&gaUartInFifo[1]);
 }
 
 void DebugInit(void)
@@ -743,7 +743,7 @@ void DebugInit(void)
 	UART1_DefInit();
 }
 
-void main()
+int main(void)
 {
 	SetSysClock(CLK_SOURCE_PLL_60MHz);
 	DebugInit();
@@ -760,12 +760,14 @@ void main()
 
 	while(1)
 	{
-		mDelaymS(10);
+		mDelaymS(1);
 		if(gXferCtx.nCfg)
 		{
 			handle_cdc(0, &gaCdc[0]);
+			mDelaymS(1);
 			handle_cdc(1, &gaCdc[1]);
 		}
 	}
+	return 0;
 }
 
