@@ -8,17 +8,48 @@
 #include "CH57X_usbdev.h"
 #include "usb_cdc.h"
 
+/**
+ * CDC x 2 
+ * Issues:
+ * 1. To slow enumulation.
+ * 2. enumulation fail on window boot up.
+ * 3. Partial packet drop while D2H.
+ * 
+ * 
+ * 
+ * Standard EP0
+ * REQ		WH		WL
+ * 
+ * 0x5		x		nAddr : Set Address.
+ * 0x6		0x1		x : Device Desc.
+ * 0x6		0x2		x : Conf Desc.
+ * 0x6		0x3		0 : Lang Desc.
+ * 0x6		0x3		1 : Manu Desc
+ * 0x6		0x3		2 : Prod Desc
+ * 0x6		0x3		3 : Serial Desc.
+ * 0x8		x		x : Get configuration.
+ * 0x9		x		nConf: Set configuration.
+ * 0xA		?		? : Get Interface.
+ * Vendor EP0
+ * 0x20				nWl : Set line coding for CDC nWl/2
+ * 0x21				nWl : Get line coding for CDC nWl/2
+ * 0x22					: Set Control Line State.
+*/
+
 #define EN_SNIFF					(0)
 #define EN_DBG						(0)
 #define EN_LOOPBACK					(1)
 
-//#define LOG(...)					HAL_DbgLog(__VA_ARGS__)
-#define LOG(...)
+#define LOG(...)					HAL_DbgLog(__VA_ARGS__)
+//#define LOG(...)
 
 #define EP_SIZE_BULK				(MAX_PACKET_SIZE)
 #define EP_SIZE_INT					(DEFAULT_ENDP0_SIZE)
-#define UART_FIFO_SIZE				(64)
+#undef UART_FIFO_SIZE
+#define UART_FIFO_SIZE				(128)
 #define NUM_CDC						(2)
+
+#define DevEP0SIZE					(0x40)
 
 typedef struct _RingBuf
 {
@@ -35,7 +66,7 @@ __attribute__((aligned(4))) uint8_t  gaBuf4EP3[64 + 64];      //ep3_out(64)+ep3_
 
 RingBuf gaUartInFifo[NUM_CDC];
 
-inline void UEP_DONE_D2H(uint8_t nEP)
+inline void D2H_RESP_NAK(uint8_t nEP)
 {
 	if(1 == nEP)
 	{
@@ -62,27 +93,27 @@ inline void UEP_DONE_D2H(uint8_t nEP)
 /**
  * Same as DevEPx_IN_Deal
 */
-inline void UEP_TRIG_D2H(uint8_t nEP, uint8_t nTxLen)
+inline void D2H_START(uint8_t nEP, uint8_t nTxLen)
 {
 	if(1 == nEP)
 	{
 		R8_UEP1_T_LEN = nTxLen;
-		R8_UEP1_CTRL = R8_UEP1_CTRL & ~ MASK_UEP_T_RES | UEP_T_RES_ACK;
+		R8_UEP1_CTRL = (R8_UEP1_CTRL & (~MASK_UEP_T_RES ))| UEP_T_RES_ACK;
 	}
 	else if(2 == nEP)
 	{
 		R8_UEP2_T_LEN = nTxLen;
-		R8_UEP2_CTRL = R8_UEP2_CTRL & ~ MASK_UEP_T_RES | UEP_T_RES_ACK;
+		R8_UEP2_CTRL = (R8_UEP2_CTRL & (~MASK_UEP_T_RES)) | UEP_T_RES_ACK;
 	}
 	else if(3 == nEP)
 	{
 		R8_UEP3_T_LEN = nTxLen;
-		R8_UEP3_CTRL = R8_UEP3_CTRL & ~ MASK_UEP_T_RES | UEP_T_RES_ACK;
+		R8_UEP3_CTRL = (R8_UEP3_CTRL & (~MASK_UEP_T_RES)) | UEP_T_RES_ACK;
 	}
 	else if(4 == nEP)
 	{
 		R8_UEP4_T_LEN = nTxLen;
-		R8_UEP4_CTRL = R8_UEP4_CTRL & ~ MASK_UEP_T_RES | UEP_T_RES_ACK;
+		R8_UEP4_CTRL = (R8_UEP4_CTRL & (~MASK_UEP_T_RES)) | UEP_T_RES_ACK;
 	}
 
 	LOG("\t(%d) D%d->H: %d\n", __LINE__, nEP, nTxLen);
@@ -91,7 +122,7 @@ inline void UEP_TRIG_D2H(uint8_t nEP, uint8_t nTxLen)
 /**
  * Response with NAK <-- Host should wait for ACK.
 */
-inline void UEP_RESP_H2D_NAK(uint8_t nEP)
+inline void H2D_RESP_NAK(uint8_t nEP)
 {
 	if(1 == nEP)
 	{
@@ -114,7 +145,7 @@ inline void UEP_RESP_H2D_NAK(uint8_t nEP)
 /**
  * Response with ACK. <-- All complete.
 */
-inline void UEP_DONE_H2D_ACK(uint8_t nEP)
+inline void H2D_RESP_ACK(uint8_t nEP)
 {
 	if(1 == nEP)
 	{
@@ -158,14 +189,16 @@ inline uint8_t fifo_is_full(RingBuf* pstFifo)
 }
 
 // Called from ISR ONLY.
-inline void fifo_put(RingBuf* pstFifo, uint8_t nData)
+inline uint8_t fifo_put(RingBuf* pstFifo, uint8_t nData)
 {
 	if (!fifo_is_full(pstFifo))
 	{
 		pstFifo->aRing[pstFifo->nWrIdx] = nData;
 		pstFifo->nWrIdx = (pstFifo->nWrIdx + 1) % UART_FIFO_SIZE;
 		pstFifo->nCnt++;
+		return 1;
 	}
+	return 0;
 }
 
 inline void fifo_get_without_check(RingBuf* pstFifo, uint8_t* pData)
@@ -193,11 +226,6 @@ typedef struct _CdcDev
 	RingBuf*	pFifo;
 } CdcDev;
 
-typedef struct _Fifo
-{
-
-} Fifo;
-
 static CdcDev gaCdc[NUM_CDC] = 
 {
 	{ // A,
@@ -222,12 +250,16 @@ static CdcDev gaCdc[NUM_CDC] =
 	},
 };
 
+/**
+ * Get CDC ID from EP Number.
+*/
+static const uint8_t gaCdcEP2Cdc[5] = {0xFF, 0xFF, 0x0, 0x1, 0xFF};
 
 /*******************************************************************************
 * Description    : USB device mode endpoint configuration, simulation compatible HID device, in addition to endpoint 0 control transmission, also includes endpoint 2 batch upload
 *******************************************************************************/
 
-uint32_t get_baud_rate(uint8_t* aAcmLineCode)
+uint32_t _GetBaudFromLC(uint8_t* aAcmLineCode)
 {
 	uint32_t nBaudRate = 0;
 
@@ -253,23 +285,9 @@ XferCtx gXferCtx = {NULL, 0, 0, 0};
 
 USB_SETUP_REQ gstUsbLastSetupReq;	// Previous Setup request copy.
 
-void handleIrqReset(void)
-{
-	R8_UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-	R8_UEP1_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP2_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP3_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
-	R8_UEP4_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
-
-	R8_USB_DEV_AD = 0;
-	R8_USB_INT_FG |= RB_UIF_BUS_RST | RB_UIF_TRANSFER | RB_UIF_SUSPEND;
-	gXferCtx.nCfg = 0;
-}
-
 /***
  * Handle data sending.
  */
-const uint8_t* gaNum2Hex = "0123456789ABCDEF";
 void handleIrqD2H(uint8_t nEP, uint8_t nDbgVal)
 {
 	UNUSED(nDbgVal);
@@ -320,12 +338,12 @@ void handleIrqD2H(uint8_t nEP, uint8_t nDbgVal)
 	}
 	else if(2 == nEP)
 	{
-		UEP_DONE_D2H(nEP);
+		D2H_RESP_NAK(nEP);	// Nothing to Transfer.
 		gaCdc[0].bRunD2H = 0;
 	}
 	else if(3 == nEP)
 	{
-		UEP_DONE_D2H(nEP);
+		D2H_RESP_NAK(nEP);
 		gaCdc[1].bRunD2H = 0;
 	}
 }
@@ -338,7 +356,7 @@ void handleIrqH2D(uint8_t nEP)
 {
 	CdcDev *pstCdc = NULL;
 	uint8_t bmInt = R8_USB_INT_FG;
-	LOG("\t(%d) H->D%d Done %X\n", __LINE__, nEP, bmInt);
+	LOG("\tH->D%d size: %d, %X\n", nEP, R8_USB_RX_LEN, bmInt);
 
 	if (bmInt & RB_U_TOG_OK)  /* Out of sync packets will be dropped. */
 	{
@@ -348,18 +366,16 @@ void handleIrqH2D(uint8_t nEP)
 			{
 				case SET_LINE_CODING:
 				{
-					LOG("Set LC I:%X len:%d\n", gstUsbLastSetupReq.wIndex, R8_USB_RX_LEN);
-
 					if ((gstUsbLastSetupReq.wIndex & 0xFF) == 0) /* interface 0 is CDC0 */
 					{
 						pstCdc = &gaCdc[0];
-						uint32_t baud = get_baud_rate(gaBuf4EP0);
+						uint32_t baud = _GetBaudFromLC(gaBuf4EP0);
 //						TH1 = 256 - FREQ_SYS / baud / 16;
 					}
 					else if ((gstUsbLastSetupReq.wIndex & 0xFF) == 2) /* interface 2 is CDC1 */
 					{
 						pstCdc = &gaCdc[1];
-						uint32_t baud = get_baud_rate(gaBuf4EP0);
+						uint32_t baud = _GetBaudFromLC(gaBuf4EP0);
 //						SBAUD1 = 256 - FREQ_SYS / 16 / baud;
 					}
 					else if ((gstUsbLastSetupReq.wIndex & 0xFF) == 4) /* interface 2 is CDC2 */
@@ -382,7 +398,11 @@ void handleIrqH2D(uint8_t nEP)
 				}
 				default:
 				{
-					LOG("EP0 RX I:%X len:%d\n", gstUsbLastSetupReq.wIndex, R8_USB_RX_LEN);
+					LOG("EP0 RX R:%X, I:%X Len:%d\n", 
+						gstUsbLastSetupReq.bRequest,
+						gstUsbLastSetupReq.wIndex,
+						R8_USB_RX_LEN);
+
 					R8_UEP0_T_LEN = 0;
 					R8_UEP0_CTRL |= UEP_R_RES_ACK | UEP_T_RES_NAK;
 					break;
@@ -391,15 +411,17 @@ void handleIrqH2D(uint8_t nEP)
 		}
 		else if(2 == nEP)
 		{
+			LOG("CDC_0 Rcv %d\n", R8_USB_RX_LEN);
 			gaCdc[0].nH2DSize = R8_USB_RX_LEN;
 			gaCdc[0].nNext2Uart = 0;
-			UEP_RESP_H2D_NAK(nEP);
+			H2D_RESP_NAK(nEP);
 		}
 		else if(3 == nEP)
 		{
+			LOG("CDC_1 Rcv %d\n", R8_USB_RX_LEN);
 			gaCdc[1].nH2DSize = R8_USB_RX_LEN;
 			gaCdc[1].nNext2Uart = 0;
-			UEP_RESP_H2D_NAK(nEP);
+			H2D_RESP_NAK(nEP);
 		}
 	}
 }
@@ -407,7 +429,7 @@ void handleIrqH2D(uint8_t nEP)
 /**
  * Get Descriptor information into gpSetupXferPoint/gnSetupXferSize
  **/
-int parepareDesc(uint8_t nDescType, uint8_t nStrIdx)
+uint8_t* _GetDesc(uint8_t nDescType, uint8_t nStrIdx, uint8_t* pnLen)
 {
 	const uint8_t *pstSrc = NULL;
 	int nSize = 0;
@@ -447,70 +469,76 @@ int parepareDesc(uint8_t nDescType, uint8_t nStrIdx)
 					nSize = sizeof(gszSerialDesc);
 					break;
 				default:
-					return -1;
+					return NULL;
 			}
 			break;
 		}
 		default:
-			return -1;
+			return NULL;
 	}
 
-	// 꼭 필요함.
-	if(nSize < gXferCtx.nXferSize)
-	{
-		gXferCtx.nXferSize = (uint16_t)nSize;
-	}
-	gXferCtx.pXferAddr = pstSrc;
-
-	return 0;
+	*pnLen = nSize;
+	return (uint8_t*)pstSrc;
 }
 
 int handleSetupStd(USB_SETUP_REQ* pstReq)
 {
 	int nRet = 0;
+	uint8_t nLen = 0;
+	uint8_t* pSrc = NULL;
+
 	switch (pstReq->bRequest)
 	{
 		case USB_GET_DESCRIPTOR:
-			nRet = parepareDesc(pstReq->wValue >> 8, pstReq->wValue & 0xFF);
+			pSrc = _GetDesc(pstReq->wValue >> 8, pstReq->wValue & 0xFF, &nLen);
 			break;
 		case USB_SET_ADDRESS:
 			/* new address is addressed after device ACK */
 			gXferCtx.nUsbAddr = pstReq->wValue & 0xFF;
-			gXferCtx.pXferAddr = NULL;
-			gXferCtx.nXferSize = 0;
 			break;
 		case USB_GET_CONFIGURATION:
-			gXferCtx.nXferSize = sizeof(gXferCtx.nCfg);
-			gXferCtx.pXferAddr = &gXferCtx.nCfg;
+			nLen = sizeof(gXferCtx.nCfg);
+			pSrc = &gXferCtx.nCfg;
 			break;
 		case USB_SET_CONFIGURATION:
 			gXferCtx.nCfg = pstReq->wValue & 0xFF;
-			gXferCtx.pXferAddr = NULL;
-			gXferCtx.nXferSize = 0;
 			break;
+		case USB_CLEAR_FEATURE:
+			nLen = 0;
+			break;
+		case USB_GET_STATUS:
+		case USB_SET_FEATURE:
 		case USB_GET_INTERFACE:
-			break;
+		case USB_SET_INTERFACE:
+		case USB_SET_DESCRIPTOR:
 		default:
 			nRet = -1;
 	}
 
-	LOG("Set Std (Req:%X, W:%04X) -> Size:%d\n",
-			pstReq->bRequest, pstReq->wValue, gXferCtx.nXferSize);
+	LOG("Set Std (Req:%X, W:%04X) -> Size:%d, %d\n",
+			pstReq->bRequest, pstReq->wValue, gXferCtx.nXferSize, nLen);
+
+// Can't exceed requested size.
+	if(nLen < gXferCtx.nXferSize)
+	{
+		gXferCtx.nXferSize = nLen;
+	}
+	gXferCtx.pXferAddr = pSrc;
 
 	return nRet;
 }
 
 int handleSetupVendor(USB_SETUP_REQ* pstReq)
 {
+	int nCdcId = (pstReq->wIndex & 0xFF) / 2;
 	switch (pstReq->bRequest)
 	{
 		case GET_LINE_CODING:
 		{
-			if((pstReq->wIndex & 0xFF) <= 4)
+			if((pstReq->wIndex & 0xFF) <= 2)
 			{
-				int nCdcId = (pstReq->wIndex & 0xFF) / 2;
 				gXferCtx.pXferAddr = gaCdc[nCdcId].anLineCoding;
-//				gXferCtx.nXferSize = sizeof(gaCdc[nCdcId].anLineCoding);
+//				ASSERT(gXferCtx.nXferSize == sizeof(gaCdc[nCdcId].anLineCoding));
 			}
 			else
 			{
@@ -539,17 +567,23 @@ int handleSetupVendor(USB_SETUP_REQ* pstReq)
  **/
 void handleIrqSetup(uint8_t nEP)
 {
+#if 0
 	if (0 != nEP)
 	{
-		LOG("Setup to EP %d\n", nEP);
+		USB_SETUP_REQ* pstReq = (USB_SETUP_REQ*)gaBuf4EP0;
+		LOG("Setup to EP %d, Param: %X, %X, %X, %X, %X\n", nEP, 
+		pstReq->bRequestType, pstReq->bRequest, pstReq->wValue, pstReq->wIndex, pstReq->wLength);
+		
 		return;
 	}
+#endif
+/*
+Setup to EP 6, Param: RT:2, R:1, W:0, I:86, L:0
+*/
 
 	USB_SETUP_REQ* pstReq = (USB_SETUP_REQ*)gaBuf4EP0;
-	int bFailed = -1;
+	int bFailed;
 
-//	for Setup packet, R8_USB_RX_LEN will not updated to 8
-//	if(R8_USB_RX_LEN == (sizeof(USB_SETUP_REQ)))
 	gXferCtx.nXferSize = (uint16_t)pstReq->wLength;
 	memcpy(&gstUsbLastSetupReq, pstReq, sizeof(gstUsbLastSetupReq));
 
@@ -575,23 +609,25 @@ void handleIrqSetup(uint8_t nEP)
 
 	memcpy(gaBuf4EP0, gXferCtx.pXferAddr, nTxSize);
 
+	gXferCtx.pXferAddr += nTxSize;
+	gXferCtx.nXferSize -= nTxSize;
+
 	if((0 == gXferCtx.nXferSize) && (nTxSize < EP_SIZE_INT))
 	{
 		gXferCtx.pXferAddr = NULL;
 	}
-
-	gXferCtx.pXferAddr += nTxSize;
-	gXferCtx.nXferSize -= nTxSize;
+	
 	R8_UEP0_T_LEN = nTxSize;
 	R8_UEP0_CTRL = RB_UEP_R_TOG | RB_UEP_T_TOG | UEP_R_RES_ACK | UEP_T_RES_ACK;
-	LOG("\t(%d) D%d->H: %d\n", __LINE__, nEP, nTxSize);
+	LOG("\t(%d) D0->H: %d\n", __LINE__, nEP, nTxSize);
 }
 
-void HandleUSB(void)
+__attribute__((interrupt("machine")))
+__attribute__((section(".highcode")))
+void USB_IRQHandler(void)
 {
 	uint8_t bmIntFlag = R8_USB_INT_FG;
-	// 0x2A : SIE_FREE | HST_SOF | TRANSFER,
-	
+
 	if (bmIntFlag & RB_UIF_TRANSFER) // Transfer done (partial or full)
 	{
 		uint8_t nDbg = R8_USB_MIS_ST;
@@ -616,7 +652,14 @@ void HandleUSB(void)
 	else if (bmIntFlag & RB_UIF_BUS_RST)
 	{
 		LOG("Reset\n");
-		handleIrqReset();
+		R8_USB_DEV_AD = 0;
+		R8_UEP0_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
+		R8_UEP1_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+		R8_UEP2_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+		R8_UEP3_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK | RB_UEP_AUTO_TOG;
+		R8_UEP4_CTRL = UEP_R_RES_ACK | UEP_T_RES_NAK;
+
+		R8_USB_INT_FG = RB_UIF_BUS_RST;
 	}
 	else if (bmIntFlag & RB_UIF_SUSPEND)
 	{
@@ -625,16 +668,10 @@ void HandleUSB(void)
 	}
 	else
 	{
-		R8_USB_INT_FG = 0xFF;
+		R8_USB_INT_FG = bmIntFlag;
 	}
 }
 
-__attribute__((interrupt("machine")))
-__attribute__((section(".highcode")))
-void USB_IRQHandler(void)
-{
-	HandleUSB();
-}
 
 void cbUartRcv(uint8_t nId, uint8_t nCh)
 {
@@ -665,9 +702,9 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 		if ((anTimeChk[nCdcId] > 20)
 			|| (nTxLen >= (EP_SIZE_BULK / 2)))
 		{
-			if(nTxLen > EP_SIZE_BULK - 1)
+			if(nTxLen > EP_SIZE_BULK)
 			{
-				nTxLen = EP_SIZE_BULK - 1;
+				nTxLen = EP_SIZE_BULK;
 			}
 
 			for (int i = 0; i < nTxLen; i++)
@@ -676,7 +713,6 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 				fifo_get_without_check(pCdc->pFifo, &cRcv);
 				aOutBuf[i] = cRcv;
 			}
-			pCdc->bRunD2H = 1;
 #if (EN_DBG == 1) // debug
 			if(0 == nCdcId)
 			{
@@ -685,7 +721,9 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 				fifo_put(&gUartFifoB, '0' + nTxLen % 10);
 			}
 #endif
-			UEP_TRIG_D2H(pCdc->nEP, nTxLen);
+			LOG("Start D2H %d, %d\n", nCdcId, nTxLen);
+			pCdc->bRunD2H = 1;
+			D2H_START(pCdc->nEP, nTxLen);
 			anTimeChk[nCdcId] = 0;
 		}
 		else
@@ -696,18 +734,18 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 
 	if (pCdc->nH2DSize > 0)
 	{
-		uint8_t nData = aInBuf[pCdc->nNext2Uart++];
-
+		uint8_t nData = aInBuf[pCdc->nNext2Uart];
+		uint8_t bDone = 0;
 #if (EN_LOOPBACK == 1)
-		HAL_DbgLog("%c", nData);
+//		HAL_DbgLog("%c", nData);
 		// Device에서 Host로 보내는 과정에서 packet 누락 생김..
 		if(0 == nCdcId)
 		{
-			fifo_put(&gaUartInFifo[1], nData);
+			bDone = fifo_put(&gaUartInFifo[1], nData);
 		}
 		else if(1 == nCdcId)
 		{
-			fifo_put(&gaUartInFifo[0], nData);
+			bDone = fifo_put(&gaUartInFifo[0], nData);
 		}
 #else
 		if(0 == nCdcId)
@@ -719,14 +757,18 @@ void handle_cdc(int nCdcId, CdcDev* pCdc)
 			//CH554UART1SendByte(nData);
 		}
 #endif
-		pCdc->nH2DSize--;
-		if (pCdc->nH2DSize == 0)
+		if(bDone != 0)
 		{
-			LOG("ACK:%d\n", pCdc->nEP);
-			/* gstCdc0: ready, continue recving */
-			UEP_DONE_H2D_ACK(pCdc->nEP);
+			pCdc->nNext2Uart++;
+			pCdc->nH2DSize--;
+			if (pCdc->nH2DSize == 0)
+			{
+				LOG("H2D ACK:%d\n", pCdc->nEP);
+				/* gstCdc0: ready, continue recving */
+				H2D_RESP_ACK(pCdc->nEP);
+			}
 		}
-	}	
+	}
 }
 
 void CDC_Init(void)
@@ -763,9 +805,10 @@ int main(void)
 		mDelaymS(1);
 		if(gXferCtx.nCfg)
 		{
-			handle_cdc(0, &gaCdc[0]);
-			mDelaymS(1);
+			PFIC_DisableIRQ(USB_IRQn);
 			handle_cdc(1, &gaCdc[1]);
+			handle_cdc(0, &gaCdc[0]);
+			PFIC_EnableIRQ(USB_IRQn);
 		}
 	}
 	return 0;
