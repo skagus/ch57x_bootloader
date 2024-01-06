@@ -1,7 +1,7 @@
 #pragma once
 
-#define OS_MSEC(x)		(x)
-#define MS_PER_TICK     (10)
+#define MS_PER_TICK				(10)
+#define MSEC_TO_TICK(x)			((x) / MS_PER_TICK)
 
 typedef enum _TaskId
 {
@@ -22,4 +22,3 @@ typedef enum _Evt
 	EVT_LED_CMD,
 	NUM_EVT,
 } EvtId;
- 

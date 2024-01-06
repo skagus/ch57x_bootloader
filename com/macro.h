@@ -1,8 +1,8 @@
 #pragma once
 
 #ifdef FALSE
-	#undef FALSE
-	#undef TRUE
+#undef FALSE
+#undef TRUE
 #endif
 #define UNUSED(x)					(void)(x)
 
@@ -33,3 +33,5 @@
 
 #define MAX(a, b) 					((a) > (b) ? (a) : (b))
 #define MIN(a, b) 					((a) < (b) ? (a) : (b))
+
+#define GAP_BTWN_16(u16big, u16less)		(((u16big) - (u16less)) & 0x7FFF)

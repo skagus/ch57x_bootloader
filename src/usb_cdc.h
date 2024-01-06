@@ -1,3 +1,5 @@
+#pragma once
+
 #define USB_DEVICE_DESCRIPTOR_TYPE              0x01
 #define USB_CONFIGURATION_DESCRIPTOR_TYPE       0x02
 #define USB_STRING_DESCRIPTOR_TYPE              0x03
@@ -21,27 +23,27 @@
 #define  GET_LINE_CODING						(0x21)	// This request allows the host to find out the currently configured line coding.
 #define  SET_CONTROL_LINE_STATE					(0x22)	// This request generates RS-232/V.24 style control signals.
 
-const uint8_t gDevDesc_CDC_ACM2 [18] = {
+const uint8_t gDevDesc_CDC_ACM2[18] = {
 	///////////////////////////////////////
 	/// device descriptor
 	///////////////////////////////////////
 	0x12,                        /* bLength */
 	USB_DEVICE_DESCRIPTOR_TYPE,  /* bDescriptorType */
-	0x00, 0x02,                  /* bcdUSB: version of USB for this device*/
+	0x00,0x02,                  /* bcdUSB: version of USB for this device*/
 	0xef,                        /* bDeviceClass : USB.org */
 	0x02,                        /* bDeviceSubClass : USB.org */
 	0x01,                        /* bDeviceProtocol : USB.org */
 	DEFAULT_ENDP0_SIZE,          /* bMaxPacketSize: max packet size of EP0 */
-	0x86, 0x1a,                  /* idVendor */
-	0x23, 0x57,                  /* idProduct */
-	0x00, 0x01,                  /* bcdDevice : Device Version number*/
+	0x86,0x1a,                  /* idVendor */
+	0x23,0x57,                  /* idProduct */
+	0x00,0x01,                  /* bcdDevice : Device Version number*/
 	IDX_MANUFACTURER_DESCRIPTOR_TYPE,                  /* iManufacturer */
 	IDX_PRODUCT_DESCRIPTOR_TYPE,                       /* iProduct */
 	IDX_SERIAL_DESCRIPTOR_TYPE,                        /* iSerial */
 	0x01,                        /* bNumConfigurations: Number of config desc */
 };
 
-const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
+const uint8_t gCfgDesc_CDC_ACM2[0x8d] = { // $$$
 	///////////////////////////////////////
 	/// config descriptor
 	///////////////////////////////////////
@@ -49,7 +51,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_CONFIGURATION_DESCRIPTOR_TYPE, /* bDescriptorType */
 	0x8d,                              /* $$$ wTotalLength Low */
 	0x00,                              /* wTotalLength High */
-	0x04,                              /* $$$ bNumInterfaces */  
+	0x04,                              /* $$$ bNumInterfaces */
 	0x01,                              /* bConfigurationValue */
 	0x00,                              /* iConfiguration */
 	0x80,                              /* bmAttributes */
@@ -123,7 +125,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,      /* bDescriptorType */
 	0x85,                              /* bEndpointAddress */
 	0x03,                              /* bmAttributes */
-	0x08, 0x00,                        /* wMaxPacketSize */
+	0x08,0x00,                        /* wMaxPacketSize */
 	0x01,                              /* bInterval */
 
 	///////////////////////////////////////
@@ -146,7 +148,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,      /* bDescriptorType */
 	0x82,                              /* bEndpointAddress */
 	0x02,                              /* bmAttributes */
-	0x40, 0x00,                        /* wMaxPacketSize */
+	0x40,0x00,                        /* wMaxPacketSize */
 	0x01,                              /* bInterval */
 
 	///////////////////////////////////////
@@ -156,7 +158,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,      /* bDescriptorType */
 	0x02,                              /* bEndpointAddress */
 	0x02,                              /* bmAttributes */
-	0x40, 0x00,                        /* wMaxPacketSize */
+	0x40,0x00,                        /* wMaxPacketSize */
 	0x01,                              /* bInterval */
 #endif
 
@@ -228,7 +230,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,    /* bDescriptorType */
 	0x86,                            /* bEndpointAddress */
 	0x03,                            /* bmAttributes */
-	0x08, 0x00,                      /* wMaxPacketSize */
+	0x08,0x00,                      /* wMaxPacketSize */
 	0x01,                            /* bInterval */
 
 	///////////////////////////////////////
@@ -251,7 +253,7 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,    /* bDescriptorType */
 	0x83,                            /* bEndpointAddress */
 	0x02,                            /* bmAttributes */
-	0x40, 0x00,                      /* wMaxPacketSize */
+	0x40,0x00,                      /* wMaxPacketSize */
 	0x01,                            /* bInterval */
 
 	///////////////////////////////////////
@@ -261,33 +263,33 @@ const uint8_t gCfgDesc_CDC_ACM2 [0x8d] = { // $$$
 	USB_ENDPOINT_DESCRIPTOR_TYPE,    /* bDescriptorType */
 	0x03,                            /* bEndpointAddress */
 	0x02,                            /* bmAttributes */
-	0x40, 0x00,                      /* wMaxPacketSize */
+	0x40,0x00,                      /* wMaxPacketSize */
 	0x01,                            /* bInterval */
 #endif
 };
 
-const uint8_t gLangDesc [0x04] = {
+const uint8_t gLangDesc[0x04] = {
 	0x04,                                         /* bLength */
 	USB_STRING_DESCRIPTOR_TYPE,                   /* bDescriptorType */
-	0x09, 0x04,                                   /* wLangID0 : Englinsh */
+	0x09,0x04,                                   /* wLangID0 : Englinsh */
 };
 
-const uint8_t gszManuDesc [0x18] = {	// "dog2nd_Zhao"
+const uint8_t gszManuDesc[0x18] = {	// "dog2nd_Zhao"
 	0x18,                                             /* bLength */
 	USB_STRING_DESCRIPTOR_TYPE,                       /* bDescriptorType */
-	'd', 0x00,'o', 0x00,'g', 0x00,'2', 0x00,'n', 0x00,'d', 0x00,'_', 0x00,'Z', 0x00,'h', 0x00,'a', 0x00,'o', 0x00
+	'd',0x00,'o',0x00,'g',0x00,'2',0x00,'n',0x00,'d',0x00,'_',0x00,'Z',0x00,'h',0x00,'a',0x00,'o',0x00
 };
 
-const uint8_t gszProdDesc [0x14] = {	// "USB CBCx2"
+const uint8_t gszProdDesc[0x14] = {	// "USB CBCx2"
 	0x14,                                             /* bLength */
 	USB_STRING_DESCRIPTOR_TYPE,                       /* bDescriptorType */
-	'U', 0x00,'S', 0x00,'B', 0x00,' ', 0x00,'C', 0x00,'D', 0x00,'C', 0x00,'x', 0x00,'2', 0x00
+	'U',0x00,'S',0x00,'B',0x00,' ',0x00,'C',0x00,'D',0x00,'C',0x00,'x',0x00,'2',0x00
 };
 
-const uint8_t gszSerialDesc [0x14] = {	// "USB123456"
+const uint8_t gszSerialDesc[0x14] = {	// "USB123456"
 	0x14,                                             /* bLength */
 	USB_STRING_DESCRIPTOR_TYPE,                       /* bDescriptorType */
-	'U', 0x00,'S', 0x00,'B', 0x00,'1', 0x00,'2', 0x00,'3', 0x00,'4', 0x00,'5', 0x00,'6', 0x00,
+	'U',0x00,'S',0x00,'B',0x00,'1',0x00,'2',0x00,'3',0x00,'4',0x00,'5',0x00,'6',0x00,
 };
 
 const uint8_t* aToHex = "0123456789ABCDEF";
