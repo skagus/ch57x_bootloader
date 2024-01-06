@@ -3,6 +3,7 @@
 #include "core_riscv.h"
 #include "CH57x_gpio.h"
 #include "macro.h"
+#include "util.h"
 #include "sched.h"
 #include "key.h"
 
@@ -39,33 +40,35 @@ typedef enum _KeyState
 	NUM_KEY_STATE,
 } KeyState;
 
-void key_Run();
-
-void KEY_ISR() {}
-
-void _SendShortKey(uint8_t nKeyId)
+typedef struct _KeyHandle
 {
-	UT_Printf("S:%d\n",nKeyId);
-}
-void _SendLongKey(uint8_t nKeyId)
-{
-	UT_Printf("L:%d\n",nKeyId);
-}
-void _SendRotKey(int8_t nChange)
-{
-	UNUSED(nChange);
-}
+	Cbf pfCb;
+	uint8_t nTag;
+} KeyHdr;
 
+KeyHdr gastKeyHdr[NUM_KEY_IN];
+
+void _KeyOp(uint8_t nKeyId,KeyOp eOp)
+{
+	KeyHdr* pHdr = gastKeyHdr + nKeyId;
+	if(NULL != pHdr->pfCb)
+	{
+		pHdr->pfCb(pHdr->nTag,eOp);
+	}
+	UT_Printf("%d:%d\n",eOp,nKeyId);
+}
 
 void _GetRawPins(uint8_t* aNewKey)
 {
-	//	static uint8_t bmVal = 1;
 	aNewKey[0] = GPIOB_ReadPortPin(GPIO_Pin_22) ? 0 : 1;
+#if 0
+	static uint8_t bmVal = 1;
 	if(bmVal != aNewKey[0])
 	{
 		bmVal = aNewKey[0];
 		//		UT_Printf("K:%X\n",bmVal);
 	}
+#endif
 }
 
 void _GetPins(uint8_t* aRet)
@@ -118,14 +121,14 @@ uint32_t _RunKey(uint8_t* aCur)
 			{
 				if(GAP_BTWN_16(nCurTick,gaChangeTime[nKey]) > TIME_FOR_LONG)
 				{
-					_SendLongKey(nKey);
+					_KeyOp(nKey,KOP_LONG);
 					gaPrv[nKey] = KEY_AFTER_LONG;
 				}
 				break;
 			}
 			case KEY_CHANGE(KEY_PRESSED,KEY_RELEASED):
 			{
-				_SendShortKey(nKey);
+				_KeyOp(nKey,KOP_SHORT);
 				gaPrv[nKey] = KEY_RELEASED;
 				gaChangeTime[nKey] = nCurTick;
 				break;
@@ -154,7 +157,7 @@ uint32_t _RunKey(uint8_t* aCur)
 	return bmSense;
 }
 
-
+#if 0
 typedef enum _EncIdx
 {
 	IDX_ENC_A,
@@ -189,17 +192,12 @@ void _RunEncoder(uint8_t* aCur)
 		}
 	}
 }
+#endif
 
-void KEY_Init()
+void key_Run(Evts nEvt)
 {
-	// setup GPIO.
-	GPIOB_ResetBits(GPIO_Pin_22);
-	GPIOB_ModeCfg(GPIO_Pin_22,GPIO_ModeIN_PU);
-	Sched_Register(TID_BUT,key_Run);
-}
+	UNUSED(nEvt);
 
-void key_Run()
-{
 	uint8_t aPins[TOTAL_PIN_IN];
 	uint32_t bmSense;
 	_GetPins(aPins);
@@ -214,4 +212,19 @@ void key_Run()
 	{
 		Sched_Wait(0,MSEC_TO_TICK(100));
 	}
+}
+
+
+void KEY_AddFunc(uint32_t nKeyId,Cbf pfCb,uint8_t nTag)
+{
+	gastKeyHdr[nKeyId].pfCb = pfCb;
+	gastKeyHdr[nKeyId].nTag = nTag;
+}
+
+void KEY_Init()
+{
+	// setup GPIO.
+	GPIOB_ResetBits(GPIO_Pin_22);
+	GPIOB_ModeCfg(GPIO_Pin_22,GPIO_ModeIN_PU);
+	Sched_Register(TID_BUT,key_Run);
 }
